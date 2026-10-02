@@ -1,0 +1,7 @@
+/* Inter 5.3.0 and JetBrains Mono 5.3.0 (Fontsource builds, SIL OFL 1.1), latin
+   subset, in the weights the dashboard previously requested from Google Fonts. */
+@font-face { font-family: "Inter"; font-style: normal; font-display: swap; font-weight: 400; src: url(inter-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-display: swap; font-weight: 600; src: url(inter-latin-600-normal.woff2) format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-display: swap; font-weight: 700; src: url(inter-latin-700-normal.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-display: swap; font-weight: 400; src: url(jetbrains-mono-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-display: swap; font-weight: 700; src: url(jetbrains-mono-latin-700-normal.woff2) format("woff2"); }
