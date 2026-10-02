@@ -155,22 +155,42 @@ def host_exec(args: list[str]) -> int:
     if not args:
         print("usage: serial-deck-cli host-exec -- <program> [args]", file=sys.stderr)
         return 2
+    job = None
     if os.name == "nt":
         import ctypes
         ctypes.WinDLL("kernel32").SetDllDirectoryW(None)
-        _kill_children_with_me()
+        try:
+            job = _kill_children_with_me()
+        except Exception as exc:  # cleanup on timeout is best effort; never block the launch
+            print(f"host-exec: no job object ({exc})", file=sys.stderr)
     try:
-        return subprocess.call(args, env=host_env())
+        code = subprocess.call(args, env=host_env())
     except OSError as exc:
         print(f"host-exec: cannot start {args[0]}: {exc}", file=sys.stderr)
         return 127
+    if job is not None:
+        # The program finished normally: anything it started (a browser opened
+        # by rundll32, say) must outlive this helper, so disarm kill-on-close.
+        job.disarm()
+    return code
 
 
-def _kill_children_with_me() -> None:
+class _KillOnClose:
+    def __init__(self, kernel32, job, info, size) -> None:
+        self._kernel32, self._job, self._info, self._size = kernel32, job, info, size
+
+    def disarm(self) -> None:
+        import ctypes
+        self._info.BasicLimitInformation.LimitFlags = 0
+        self._kernel32.SetInformationJobObject(self._job, 9, ctypes.byref(self._info), self._size)
+
+
+def _kill_children_with_me():
     """Put this helper in a Job Object that kills its whole tree when it dies.
 
     run_host() kills the helper on timeout; with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     the host program (our child) dies with it instead of holding the pipes open.
+    Returns a handle whose disarm() lifts that once the program exits normally.
     """
     import ctypes
     from ctypes import wintypes
@@ -197,13 +217,16 @@ def _kill_children_with_me() -> None:
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
-        return
+        return None
     info = EXTENDED()
     info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    kernel32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+    handle = wintypes.HANDLE(job)
+    kernel32.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info))
     # The job handle stays open for this process's lifetime; when the helper is
     # killed, the handle closes and Windows terminates every process in the job.
-    kernel32.AssignProcessToJobObject(wintypes.HANDLE(job), kernel32.GetCurrentProcess())
+    if not kernel32.AssignProcessToJobObject(handle, kernel32.GetCurrentProcess()):
+        return None
+    return _KillOnClose(kernel32, handle, info, ctypes.sizeof(info))
 
 
 def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None, **kwargs):
@@ -256,6 +279,11 @@ def open_browser(url: str) -> bool:
         opener = ["open" if sys.platform == "darwin" else "xdg-open", url]
     try:
         result = run_host(opener, capture_output=True, timeout=15)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        report_status(browser_error=f"{type(exc).__name__}: {exc}")
         return False
+    if result.returncode != 0:
+        detail = (result.stderr or b"")
+        detail = detail.decode("utf-8", "replace") if isinstance(detail, bytes) else str(detail)
+        report_status(browser_error=f"{opener[0]} exited {result.returncode}: {detail.strip()[-400:]}")
     return result.returncode == 0

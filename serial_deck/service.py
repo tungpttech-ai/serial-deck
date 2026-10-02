@@ -118,7 +118,8 @@ class PortChannel(UartHub):
 
     def attach(self, client: socket.socket) -> None:
         with self.gate:
-            if self.closed or self.service.stop.is_set() or (self.serial is None and not self.flashing):
+            if (self.closed or self.service.stop.is_set() or self.service.closing
+                    or (self.serial is None and not self.flashing)):
                 client.close()
                 return
             ipc.make_nonblocking(client)
@@ -210,6 +211,7 @@ class MultiPortHub(UartHub):
         digest = hashlib.sha256(str(self.socket_path.absolute()).encode()).hexdigest()[:12]
         self.channel_dir = ipc.channel_root() / digest
         self.lock: ipc.FileLock | None = None
+        self.closing = False  # set once a shutdown is accepted; refuses new work
 
     def start(self) -> None:
         ipc.private_dir(self.socket_path.parent)
@@ -262,7 +264,7 @@ class MultiPortHub(UartHub):
             raise ValueError(f"on_baud_conflict must be one of {', '.join(BAUD_CONFLICT_POLICIES)}")
         key = device_key(port)
         with self.channels_lock:
-            if self.stop.is_set():
+            if self.stop.is_set() or self.closing:
                 raise RuntimeError("hub is shutting down")
             channel = self.channels.get(key)
             created = channel is None
@@ -296,12 +298,14 @@ class MultiPortHub(UartHub):
                 self._publish_status()
                 return
             if action == "shutdown":
-                # One atomic check-and-stop under every channel gate: once it
-                # returns, claims and attaches are refused, so the daemon is
-                # committed to exiting. Only then acknowledge, with the pid the
-                # caller must wait for. run() lingers briefly so the reply is sent.
-                self.request_shutdown()
+                # One atomic check under every channel gate that also closes the
+                # door: once it returns, claims and attaches are refused, so the
+                # daemon is committed to exiting. The acknowledgment (with the pid
+                # the caller waits for) is sent *before* the run loop may tear the
+                # sockets down; only then is the stop released.
+                self.request_shutdown(commit=False)
                 reply(client, {"ok": True, "stopping": True, "pid": os.getpid()})
+                self.stop.set()
                 return
             if action in ("status", "scan", "subscribe") and "port" not in request:
                 super()._handle_control(client, request)
@@ -320,13 +324,20 @@ class MultiPortHub(UartHub):
         except Exception as exc:
             reply(client, {"ok": False, "error": str(exc)})
 
-    def request_shutdown(self, require_idle: bool = True) -> None:
+    def request_shutdown(self, require_idle: bool = True, commit: bool = True) -> None:
+        """Refuse while clients or a flash are active; otherwise stop accepting work.
+
+        `commit=False` closes the door (`closing`: claims and attaches refused)
+        without releasing the run loop yet, so a caller can answer first.
+        """
         with self.channels_lock, ExitStack() as stack:
             for channel in self.channels.values():
                 stack.enter_context(channel.gate)
             if any(c.flashing or (require_idle and c.clients) for c in self.channels.values()):
                 raise RuntimeError("cannot shut down while clients or flash are active")
-            self.stop.set()
+            self.closing = True
+            if commit:
+                self.stop.set()
 
     def _accept_loop(self) -> None:
         # Legacy raw clients may attach to the root only with one live port.

@@ -203,6 +203,7 @@ jobs:
           if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "first install failed" }
           if (-not (Test-Path $cli)) { throw "not installed" }
           python packaging/smoke_test.py $cli
+          if ($LASTEXITCODE -ne 0) { throw "installed smoke test failed ($LASTEXITCODE)" }
           # 2. Upgrade while a dashboard holds a hub client: setup must refuse and change nothing.
           Stage "upgrade must refuse while a client is attached"
           $ready = Join-Path $env:RUNNER_TEMP "client-ready.txt"

@@ -138,6 +138,14 @@ def browser_mode_test(gui: str, env: dict[str, str], work: Path) -> None:
                 pass
             time.sleep(0.25)
         url = status["url"]
+        if os.name == "nt":
+            # The hand-off path itself: host-exec must run a host program and relay
+            # its exit code, independent of whether a default browser exists.
+            probe = subprocess.run([gui.replace("serial-deck.exe", "serial-deck-cli.exe"), "host-exec", "--",
+                                    "cmd.exe", "/d", "/c", "exit 5"], env=env, cwd=CWD, capture_output=True,
+                                   text=True, timeout=60)
+            assert probe.returncode == 5, f"host-exec did not relay the exit code: {probe.returncode} {probe.stderr}"
+            print(f"host-exec relays exit codes; browser hand-off status: {status}")
         assert status["browser_opened"] is True, f"the system opener failed: {status}"
         if os.name != "nt":
             assert receipt.exists() and receipt.read_text().strip() == url, \
