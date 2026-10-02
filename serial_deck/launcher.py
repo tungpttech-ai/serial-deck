@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
         from serial_deck import __version__
         print(f"serial-deck {__version__}")
         return 0
+    if args and args[0] == "host-exec":  # internal: see runtime.popen_host
+        from serial_deck import runtime
+        return runtime.host_exec(args[1:])
     command = args.pop(0) if args and args[0] in COMMANDS else "app"
     module_name = COMMANDS[command][0]
     import importlib

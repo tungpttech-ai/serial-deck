@@ -371,6 +371,7 @@ def run_browser(args: argparse.Namespace, backend: Any,
             wait_for_backend(backend.port, backend.instance_token)
         print(f"Serial Deck dashboard: {backend.url}", flush=True)
         opened = (open_url or runtime.open_browser)(backend.url)
+        runtime.report_status(url=backend.url, browser_opened=bool(opened))
         if not opened:
             print(f"Could not start a browser; open {backend.url} yourself.", file=sys.stderr, flush=True)
         while not stop.is_set():
@@ -449,6 +450,7 @@ def run_app(args: argparse.Namespace,
                     try:
                         if window.evaluate_js("document.title") == APP_TITLE:
                             print("SMOKE WINDOW OK", flush=True)
+                            runtime.report_status(window_ok=True, url=backend.url)
                             controller.smoke_ok = True
                             break
                     except Exception:

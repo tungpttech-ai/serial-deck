@@ -228,8 +228,9 @@ jobs:
           if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "idle upgrade failed" }
           & $cli hub --status 2>$null; if ($LASTEXITCODE -ne 3) { throw "hub still running after upgrade" }
           # 4. Uninstall removes everything it installed.
-          $p = Start-Process (Join-Path $app "unins000.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "uninstall failed ($($p.ExitCode))" }
+          $ulog = "$env:RUNNER_TEMP\uninstall.log"
+          $p = Start-Process (Join-Path $app "unins000.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/LOG=`"$ulog`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $ulog -Tail 40 -ErrorAction SilentlyContinue; throw "uninstall failed ($($p.ExitCode))" }
           for ($i = 0; $i -lt 20 -and (Test-Path (Join-Path $app "serial-deck.exe")); $i++) { Start-Sleep 1 }
           if (Test-Path (Join-Path $app "serial-deck.exe")) { throw "uninstall left files" }
       - name: Remove certificate

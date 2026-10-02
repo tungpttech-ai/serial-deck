@@ -66,6 +66,27 @@ class FrozenSelfCommandTest(unittest.TestCase):
             self.assertEqual(runtime.host_env()["LD_LIBRARY_PATH"], "/x")
 
 
+class HostExecTest(unittest.TestCase):
+    def test_windows_bundle_launches_host_programs_through_host_exec(self):
+        with patch.object(runtime, "frozen", return_value=True), patch.object(runtime.os, "name", "nt"), \
+                patch.object(runtime, "console_executable", return_value=r"C:\App\serial-deck-cli.exe"), \
+                patch("subprocess.Popen") as popen:
+            runtime.popen_host(["addr2line", "-e", "app.elf"])
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[:3], [r"C:\App\serial-deck-cli.exe", "host-exec", "--"])
+        self.assertEqual(argv[3:], ["addr2line", "-e", "app.elf"])
+
+    def test_host_exec_runs_the_program_and_relays_its_exit_code(self):
+        code = runtime.host_exec(["--", sys.executable, "-c", "raise SystemExit(7)"])
+        self.assertEqual(code, 7)
+        self.assertEqual(runtime.host_exec([]), 2)
+
+    def test_launcher_routes_host_exec(self):
+        with patch.object(runtime, "host_exec", return_value=5) as host_exec:
+            self.assertEqual(launcher.main(["host-exec", "--", "x"]), 5)
+        host_exec.assert_called_once_with(["--", "x"])
+
+
 class FrozenIntegrationTest(unittest.TestCase):
     def test_hub_is_spawned_through_the_bundle_when_frozen(self):
         manager = HubProcessManager(socket_path="/tmp/sd-frozen-test.sock")

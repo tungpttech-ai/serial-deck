@@ -117,6 +117,10 @@ begin
       if VarIsNull(Item.ExecutablePath) then
         continue;
       Path := Item.ExecutablePath;
+      // The uninstaller itself starts as {app}\unins000.exe and waits for its
+      // temporary copy; it is not a Serial Deck program.
+      if CompareText(ExtractFileName(Path), 'unins000.exe') = 0 then
+        continue;
       if Pos(Uppercase(AddBackslash(Dir)), Uppercase(Path)) = 1 then
       begin
         Result := True;

@@ -104,38 +104,44 @@ def free_port() -> int:
 
 def browser_mode_test(gui: str, env: dict[str, str], work: Path) -> None:
     """`app --browser` (the Linux default and the no-WebView2 fallback): it must
-    hand the URL to the system opener, keep serving, and stop on Quit."""
-    opened = work / "opened-url.txt"
-    fake = work / "opener"
-    fake.mkdir(exist_ok=True)
-    browser_env = dict(env)
-    if os.name == "nt":
-        # rundll32 cannot be faked; read the URL from the app's own output instead.
-        opener_log = None
-    else:
-        name = "open" if sys.platform == "darwin" else "xdg-open"
-        script = fake / name
-        script.write_text(f"#!/bin/sh\necho \"$1\" > '{opened}'\n")
+    hand the URL to the system opener, keep serving, and stop on Quit.
+
+    The GUI may be a windowed executable without stdout, so the URL and the
+    browser hand-off are read from SERIAL_DECK_STATUS_FILE. On POSIX a fake
+    `xdg-open`/`open` must also have received the URL.
+    """
+    status_file = work / "browser-status.json"
+    receipt = work / "opened-url.txt"
+    browser_env = dict(env, SERIAL_DECK_STATUS_FILE=str(status_file))
+    if os.name != "nt":
+        fake = work / "opener"
+        fake.mkdir(exist_ok=True)
+        script = fake / ("open" if sys.platform == "darwin" else "xdg-open")
+        script.write_text(f"#!/bin/sh\necho \"$1\" > '{receipt}'\n")
         script.chmod(0o755)
         browser_env["PATH"] = os.pathsep.join([str(fake), env["PATH"]])
-        opener_log = opened
-    log = work / "browser-app.log"
-    with log.open("w", encoding="utf-8") as out:
-        process = subprocess.Popen([gui, "app", "--browser"], env=browser_env, cwd=CWD,
-                                   stdout=out, stderr=subprocess.STDOUT)
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+             else {"start_new_session": True})
+    process = subprocess.Popen([gui, "app", "--browser"], env=browser_env, cwd=CWD,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **group)
     try:
         deadline = time.monotonic() + DEADLINE
-        url = ""
-        while not url:
+        status: dict = {}
+        while "browser_opened" not in status:
             if time.monotonic() > deadline:
-                raise SystemExit(f"FAILED: browser mode never opened a URL: {log.read_text()[-600:]}")
-            if opener_log is not None and opener_log.exists():
-                url = opener_log.read_text().strip()
-            else:
-                for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-                    if line.startswith("Serial Deck dashboard: "):
-                        url = line.split(": ", 1)[1].strip()
+                raise SystemExit(f"FAILED: browser mode never reported: {status}")
+            if process.poll() is not None:
+                raise SystemExit(f"FAILED: browser mode exited early ({process.returncode})")
+            try:
+                status = json.loads(status_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
             time.sleep(0.25)
+        url = status["url"]
+        assert status["browser_opened"] is True, f"the system opener failed: {status}"
+        if os.name != "nt":
+            assert receipt.exists() and receipt.read_text().strip() == url, \
+                "the opener never received the dashboard URL"
         base = url.rstrip("/")
         info = json.loads(wait_url(f"{base}/api/instance"))
         assert info.get("browser_mode") is True, info
@@ -145,7 +151,7 @@ def browser_mode_test(gui: str, env: dict[str, str], work: Path) -> None:
         with urllib.request.urlopen(request, timeout=10) as response:
             assert json.loads(response.read()).get("ok") is True
         process.wait(timeout=30)
-        print(f"browser mode: opened {url}, Quit stopped it (exit {process.returncode})")
+        print(f"browser mode: handed {url} to the opener, Quit stopped it (exit {process.returncode})")
     finally:
         if process.poll() is None:
             stop_group(process)
@@ -296,9 +302,15 @@ def main() -> int:
             if sys.platform.startswith("linux"):
                 assert "browser mode" in gui.stdout, gui.stdout
             if args.window and not sys.platform.startswith("linux"):
-                window = run(args.gui, env, "app", "--smoke-test", check=False, timeout=120)
-                assert window.returncode == 0 and "SMOKE WINDOW OK" in window.stdout, \
-                    f"app window did not load the dashboard: {window.stdout[-400:]} {window.stderr[-400:]}"
+                status_file = work / "window-status.json"
+                window = run(args.gui, dict(env, SERIAL_DECK_STATUS_FILE=str(status_file)),
+                             "app", "--smoke-test", check=False, timeout=120)
+                try:
+                    status = json.loads(status_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    status = {}
+                assert window.returncode == 0 and status.get("window_ok") is True, \
+                    f"app window did not load the dashboard (exit {window.returncode}, status {status})"
                 print("app window loaded the dashboard")
 
         stop_group(web)

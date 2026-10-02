@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
 from pathlib import Path
 
 CLI_NAME = "serial-deck-cli"
@@ -86,7 +85,26 @@ def host_env() -> dict[str, str]:
     return env
 
 
-_SPAWN_LOCK = threading.Lock()
+
+
+def report_status(**fields: object) -> None:
+    """Write startup facts to $SERIAL_DECK_STATUS_FILE, if set (for tests).
+
+    A windowed Windows/macOS executable has no stdout, so a test cannot read
+    the dashboard URL or the window result from it; it reads this file instead.
+    """
+    path = os.environ.get("SERIAL_DECK_STATUS_FILE")
+    if not path:
+        return
+    import json
+    try:
+        current = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = {}
+    current.update(fields)
+    tmp = f"{path}.tmp"
+    Path(tmp).write_text(json.dumps(current), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def shell_quote(arg: str) -> str:
@@ -108,34 +126,43 @@ def shell_command(parts: list[str]) -> str:
 
 
 def popen_host(args: list[str], **kwargs):
-    """subprocess.Popen for a *host* program, with the bundle's loader state undone.
+    """subprocess.Popen for a *host* program, without the bundle's loader state.
 
-    Environment: host_env(). Windows bundles also call SetDllDirectoryW(<bundle>)
-    for themselves, and a child inherits that search path; it is cleared only
-    for the instant CreateProcess runs (serialized, restored right after), so
-    this process never runs without it.
+    Environment: host_env(). On Windows a PyInstaller bundle has called
+    SetDllDirectoryW(<bundle>) for itself, and a direct child inherits that DLL
+    search path. This process never changes it (other threads load DLLs at any
+    time); instead a separate single-purpose helper, `serial-deck-cli host-exec`,
+    clears it in its own process and then starts the host program, relaying
+    stdio and the exit code.
     """
     import subprocess
     kwargs.setdefault("env", host_env())
     if not (frozen() and os.name == "nt"):
         return subprocess.Popen(args, **kwargs)
-    import ctypes
-    from ctypes import wintypes
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetDllDirectoryW.argtypes = [wintypes.DWORD, wintypes.LPWSTR]
-    kernel32.GetDllDirectoryW.restype = wintypes.DWORD
-    kernel32.SetDllDirectoryW.argtypes = [wintypes.LPCWSTR]
-    with _SPAWN_LOCK:
-        # Save the exact current value (whatever set it), clear it only for
-        # CreateProcess, then put back precisely that value.
-        size = kernel32.GetDllDirectoryW(0, None)
-        buffer = ctypes.create_unicode_buffer(max(size, 1))
-        previous = buffer.value if size and kernel32.GetDllDirectoryW(size, buffer) else None
-        kernel32.SetDllDirectoryW(None)
-        try:
-            return subprocess.Popen(args, **kwargs)
-        finally:
-            kernel32.SetDllDirectoryW(previous)
+    kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return subprocess.Popen([console_executable(), "host-exec", "--", *args], **kwargs)
+
+
+def host_exec(args: list[str]) -> int:
+    """`host-exec -- <program> [args]`: run a host program with a clean DLL path.
+
+    Runs in its own short-lived process, so clearing the bundle's DLL directory
+    here cannot race anything else.
+    """
+    import subprocess
+    if args and args[0] == "--":
+        args = args[1:]
+    if not args:
+        print("usage: serial-deck-cli host-exec -- <program> [args]", file=sys.stderr)
+        return 2
+    if os.name == "nt":
+        import ctypes
+        ctypes.WinDLL("kernel32").SetDllDirectoryW(None)
+    try:
+        return subprocess.call(args, env=host_env())
+    except OSError as exc:
+        print(f"host-exec: cannot start {args[0]}: {exc}", file=sys.stderr)
+        return 127
 
 
 def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None, **kwargs):
