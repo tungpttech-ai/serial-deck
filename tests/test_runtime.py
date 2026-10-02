@@ -3,6 +3,7 @@
 import io
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -91,6 +92,32 @@ class HostExecTest(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             runtime.run_host([sys.executable, "-c", script], timeout=0.5, capture_output=True)
         self.assertLess(time.monotonic() - started, 4.0)
+
+    def test_run_host_accepts_subprocess_run_arguments(self):
+        import subprocess
+        ok = runtime.run_host([sys.executable, "-c", "print('hi')"], capture_output=True, text=True,
+                              timeout=30, check=False)
+        self.assertEqual((ok.returncode, ok.stdout.strip()), (0, "hi"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            runtime.run_host([sys.executable, "-c", "raise SystemExit(3)"], capture_output=True, check=True)
+
+    def test_symbolizer_runs_addr2line_through_run_host(self):
+        from serial_deck.web import ElfSymbolizer
+        with tempfile.TemporaryDirectory() as temp:
+            elf = Path(temp) / "app.elf"
+            elf.write_bytes(b"\x7fELF" + b"\x00" * 60)
+            tool = Path(temp) / "addr2line.py"
+            tool.write_text("import sys\nprint('app_main at main.c:12')\n", encoding="utf-8")
+            symbolizer = ElfSymbolizer(str(elf), tool_path=sys.executable)
+            with patch.object(runtime, "run_host", wraps=runtime.run_host) as spy, \
+                    patch.object(symbolizer, "tool_path", sys.executable):
+                # Run "python addr2line.py ..." in place of the real tool.
+                original = runtime.popen_host
+                with patch.object(runtime, "popen_host",
+                                  side_effect=lambda a, **k: original([a[0], str(tool), *a[1:]], **k)):
+                    lines = symbolizer.decode("Backtrace: 0x42001234")
+            self.assertTrue(spy.called)
+            self.assertEqual(lines, ["0x42001234: app_main at main.c:12"])
 
     def test_launcher_routes_host_exec(self):
         with patch.object(runtime, "host_exec", return_value=5) as host_exec:

@@ -85,6 +85,10 @@ class PortChannel(UartHub):
             with self.gate:
                 if self.closed or self.service.stop.is_set():
                     raise RuntimeError("UART channel expired; reconnect through the hub")
+                # A shutdown was accepted (its reply may still be in flight): read-only
+                # status keeps working, but nothing may start, least of all a flash.
+                if self.service.closing and request.get("action") not in ("status", "get_lines"):
+                    raise RuntimeError("hub is shutting down")
                 action = request.get("action")
                 if action == "claim":
                     raise RuntimeError("select ports through the shared hub control socket")

@@ -229,8 +229,9 @@ def _kill_children_with_me():
     return _KillOnClose(kernel32, handle, info, ctypes.sizeof(info))
 
 
-def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None, **kwargs):
-    """subprocess.run equivalent built on popen_host."""
+def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None,
+             check: bool = False, **kwargs):
+    """subprocess.run equivalent built on popen_host (same keyword arguments)."""
     import subprocess
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
@@ -248,6 +249,8 @@ def run_host(args: list[str], timeout: float | None = None, input: str | bytes |
         except subprocess.TimeoutExpired:
             pass
         raise
+    if check and process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, args, stdout, stderr)
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
 

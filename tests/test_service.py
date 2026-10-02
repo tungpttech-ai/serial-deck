@@ -322,6 +322,20 @@ class MultiPortServiceTest(unittest.TestCase):
                 eventually(lambda: not self.service.flash_lock.locked())
         self.assertEqual(first.get_status()["flash"]["exit_code"], 0)
 
+    def test_accepted_shutdown_refuses_new_flash_and_claims(self):
+        manager, transport = self.attach(0)
+        transport.close()
+        self.transports.remove(transport)
+        eventually(lambda: manager.get_status()["client_count"] == 0)
+        self.service.request_shutdown(commit=False)  # accepted, reply not yet sent
+        with patch.object(uart, "flash_build_in_process", side_effect=AssertionError("flash started")), \
+                self.assertRaisesRegex(RuntimeError, "shutting down"):
+            manager.start_flash("/fake-build", 115200)
+        with self.assertRaisesRegex(RuntimeError, "shutting down"):
+            self.root.claim_port(self.ports[1], 115200)
+        self.assertFalse(any(c.flashing for c in self.service.channels.values()))
+        self.assertEqual(manager.get_status()["port"], self.ports[0])  # status still answers
+
     def test_duplicate_daemon_cannot_unlink_live_socket(self):
         other = MultiPortHub(self.path)
         with self.assertRaises((OSError, RuntimeError)):
