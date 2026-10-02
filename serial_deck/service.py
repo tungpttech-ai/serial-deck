@@ -296,14 +296,12 @@ class MultiPortHub(UartHub):
                 self._publish_status()
                 return
             if action == "shutdown":
-                # Check, answer, then stop: the process exits right after stop
-                # is set, and an unsent reply reads as "closed without a response".
-                self.request_shutdown(dry_run=True)
-                reply(client, {"ok": True})
-                try:
-                    self.request_shutdown()
-                except RuntimeError:
-                    pass  # a client attached in between: stay up, it still works
+                # One atomic check-and-stop under every channel gate: once it
+                # returns, claims and attaches are refused, so the daemon is
+                # committed to exiting. Only then acknowledge, with the pid the
+                # caller must wait for. run() lingers briefly so the reply is sent.
+                self.request_shutdown()
+                reply(client, {"ok": True, "stopping": True, "pid": os.getpid()})
                 return
             if action in ("status", "scan", "subscribe") and "port" not in request:
                 super()._handle_control(client, request)
@@ -322,14 +320,13 @@ class MultiPortHub(UartHub):
         except Exception as exc:
             reply(client, {"ok": False, "error": str(exc)})
 
-    def request_shutdown(self, require_idle: bool = True, dry_run: bool = False) -> None:
+    def request_shutdown(self, require_idle: bool = True) -> None:
         with self.channels_lock, ExitStack() as stack:
             for channel in self.channels.values():
                 stack.enter_context(channel.gate)
             if any(c.flashing or (require_idle and c.clients) for c in self.channels.values()):
                 raise RuntimeError("cannot shut down while clients or flash are active")
-            if not dry_run:
-                self.stop.set()
+            self.stop.set()
 
     def _accept_loop(self) -> None:
         # Legacy raw clients may attach to the root only with one live port.

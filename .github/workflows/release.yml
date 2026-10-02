@@ -1,0 +1,422 @@
+name: Release
+
+# Builds native installers. Pull requests build and smoke-test unsigned, with
+# read-only permissions and no secrets. Signing and publishing run only for a
+# v* tag (or a manual run naming one) in this repository, inside the `release`
+# environment that holds the secrets.
+
+on:
+  pull_request:
+    paths: ["packaging/**", "serial_deck/**", "pyproject.toml", ".github/workflows/release.yml"]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and publish, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag || '' }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  PYINSTALLER_VERSION: "6.22.3"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      version: ${{ steps.ref.outputs.version }}
+      publish: ${{ steps.ref.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: ref
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          publish=false
+          case "$EVENT" in
+            pull_request) ref="$GITHUB_SHA" ;;
+            push) ref="$REF_NAME"; publish=true ;;
+            workflow_dispatch)
+              if ! [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "tag must look like v1.2.3" >&2; exit 1
+              fi
+              git rev-parse -q --verify "refs/tags/$INPUT_TAG" >/dev/null || { echo "no such tag" >&2; exit 1; }
+              git merge-base --is-ancestor "$INPUT_TAG" origin/main || { echo "tag not on main" >&2; exit 1; }
+              ref="$INPUT_TAG"; publish=true ;;
+          esac
+          [ "$REPO" = "tungpttech-ai/serial-deck" ] || publish=false
+          git checkout -q "$ref"
+          version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('serial_deck/__init__.py').read()).group(1))")
+          if [ "$publish" = true ] && [ "${ref#v}" != "$version" ]; then
+            echo "tag $ref does not match serial_deck.__version__ $version" >&2; exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  python-dist:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build sdist, then the wheel from that sdist
+        run: |
+          python -m pip install build
+          python -m build --sdist -o dist .
+          tar xzf dist/*.tar.gz -C "$RUNNER_TEMP"
+          python -m build --wheel -o dist "$RUNNER_TEMP"/serial_deck-*/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+
+  windows:
+    needs: prepare
+    runs-on: windows-2022
+    environment: ${{ needs.prepare.outputs.publish == 'true' && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install build dependencies
+        run: |
+          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}" pythonnet
+          python -m pip install ".[app,mcp]"
+      - name: Freeze
+        run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
+      - name: Prepare signing certificate
+        id: cert
+        if: needs.prepare.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+        run: |
+          if (-not $env:CERT_PFX) { "enabled=false" >> $env:GITHUB_OUTPUT; exit 0 }
+          $path = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:CERT_PFX))
+          "enabled=true" >> $env:GITHUB_OUTPUT
+          "path=$path" >> $env:GITHUB_OUTPUT
+      - name: Sign payload executables
+        if: steps.cert.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          CERT_PATH: ${{ steps.cert.outputs.path }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f $env:CERT_PATH /p $env:CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\serial-deck\serial-deck.exe dist\serial-deck\serial-deck-cli.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+      - name: Smoke test the bundle
+        run: python packaging/smoke_test.py dist/serial-deck/serial-deck-cli.exe --gui dist/serial-deck/serial-deck.exe
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\serial-deck -DestinationPath "dist\SerialDeck-${{ needs.prepare.outputs.version }}-win-x64.zip"
+      - name: Installer
+        shell: pwsh
+        env:
+          CERT_PATH: ${{ steps.cert.outputs.path }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          SIGNED: ${{ steps.cert.outputs.enabled }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $args = @("/DAppVersion=${{ needs.prepare.outputs.version }}", "packaging\windows\serial-deck.iss")
+          if ($env:SIGNED -eq 'true') {
+            $args = @("/DSign=1", "/Ssigntool=`"$env:SIGNTOOL`" sign /f `$q$env:CERT_PATH`$q /p `$q$env:CERT_PASSWORD`$q /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f") + $args
+          }
+          & $iscc @args
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Installer lifecycle test
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\installer\SerialDeck-*-Setup.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/CURRENTUSER","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $app = Join-Path $env:LOCALAPPDATA "Programs\Serial Deck"
+          if (-not (Test-Path "$app\serial-deck-cli.exe")) { throw "not installed" }
+          python packaging/smoke_test.py "$app\serial-deck-cli.exe"
+          # Upgrade over an idle running hub must succeed (setup stops it first).
+          & "$app\serial-deck-cli.exe" web --port-web 18777 &
+          Start-Sleep 5
+          Get-Job | Stop-Job; Get-Job | Remove-Job
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/CURRENTUSER","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait
+          Start-Sleep 3
+          if (Test-Path "$app\serial-deck.exe") { throw "uninstall left files" }
+      - name: Remove certificate
+        if: always() && steps.cert.outputs.path
+        shell: pwsh
+        run: Remove-Item -Force "${{ steps.cert.outputs.path }}" -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/installer/*.exe
+            dist/*.zip
+
+  macos:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ needs.prepare.outputs.publish == 'true' && 'release' || '' }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install build dependencies
+        run: |
+          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+          python -m pip install ".[app,mcp]" pyobjc-framework-Cocoa pyobjc-framework-WebKit pyobjc-framework-Quartz pyobjc-framework-Security pyobjc-framework-UniformTypeIdentifiers
+      - name: Icon
+        run: |
+          set -euo pipefail
+          set_dir=$RUNNER_TEMP/serial-deck.iconset; mkdir -p "$set_dir"
+          for s in 16 32 128 256 512; do
+            cp packaging/icons/serial-deck-$s.png "$set_dir/icon_${s}x${s}.png"
+            d=$((s*2)); [ -f packaging/icons/serial-deck-$d.png ] && cp packaging/icons/serial-deck-$d.png "$set_dir/icon_${s}x${s}@2x.png"
+          done
+          iconutil -c icns "$set_dir" -o packaging/icons/serial-deck.icns
+      - name: Import signing certificate
+        id: cert
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERT_P12:-}" ]; then echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          kc_pass=$(openssl rand -hex 24)
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+          echo "SERIAL_DECK_CODESIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "SERIAL_DECK_ENTITLEMENTS=$PWD/packaging/macos/entitlements.plist" >> "$GITHUB_ENV"
+      - name: Freeze
+        run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
+      - name: Sign app
+        env:
+          SIGNED: ${{ steps.cert.outputs.enabled }}
+        run: |
+          set -euo pipefail
+          app="dist/Serial Deck.app"
+          if [ "$SIGNED" = true ]; then
+            codesign --force --options runtime --timestamp --entitlements packaging/macos/entitlements.plist \
+              --sign "$SERIAL_DECK_CODESIGN_IDENTITY" "$app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+          else
+            codesign --force --deep --sign - "$app"   # ad-hoc, so arm64 binaries run
+          fi
+      - name: Check architectures and minimum macOS
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r -d '' f; do
+            if file "$f" | grep -q "Mach-O"; then
+              archs=$(lipo -archs "$f" 2>/dev/null || true)
+              case " $archs " in *" ${{ matrix.arch }} "*) ;; *) echo "wrong arch: $f ($archs)"; bad=1 ;; esac
+              minos=$(otool -l "$f" | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; exit} /LC_VERSION_MIN_MACOSX/{v=1} v&&/version/{print $2; exit}')
+              if [ -n "$minos" ] && [ "$(printf '%s\n12.0\n' "$minos" | sort -V | tail -1)" != "12.0" ]; then
+                echo "needs macOS $minos: $f"; bad=1
+              fi
+            fi
+          done < <(find "dist/Serial Deck.app" -type f -print0)
+          exit $bad
+      - name: Smoke test the bundle
+        run: |
+          python packaging/smoke_test.py "dist/Serial Deck.app/Contents/MacOS/serial-deck-cli" \
+            --gui "dist/Serial Deck.app/Contents/MacOS/serial-deck"
+      - name: Disk image
+        env:
+          SIGNED: ${{ steps.cert.outputs.enabled }}
+        run: |
+          set -euo pipefail
+          staging=$RUNNER_TEMP/dmg; mkdir -p "$staging"
+          ditto "dist/Serial Deck.app" "$staging/Serial Deck.app"
+          ln -s /Applications "$staging/Applications"
+          dmg="dist/SerialDeck-${{ needs.prepare.outputs.version }}-macos-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "Serial Deck" -srcfolder "$staging" -ov -format UDZO "$dmg"
+          if [ "$SIGNED" = true ]; then codesign --force --timestamp --sign "$SERIAL_DECK_CODESIGN_IDENTITY" "$dmg"; fi
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+      - name: Notarize
+        if: steps.cert.outputs.enabled == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          out=$(xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_PASSWORD" --wait --output-format json)
+          echo "$out"
+          status=$(printf '%s' "$out" | python3 -c "import json,sys;print(json.load(sys.stdin)['status'])")
+          if [ "$status" != "Accepted" ]; then
+            id=$(printf '%s' "$out" | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+            xcrun notarytool log "$id" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose "$DMG"
+      - name: Remove keychain
+        if: always() && steps.cert.outputs.keychain
+        run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    environment: ${{ needs.prepare.outputs.publish == 'true' && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev fakeroot desktop-file-utils
+          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+          python -m pip install ".[mcp]"
+      - name: Freeze
+        run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
+      - name: Smoke test the bundle
+        run: python packaging/smoke_test.py dist/serial-deck/serial-deck-cli
+      - name: AppImage
+        run: |
+          set -euo pipefail
+          version=${{ needs.prepare.outputs.version }}
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          appdir=$RUNNER_TEMP/SerialDeck.AppDir
+          mkdir -p "$appdir/usr/lib"
+          cp -a dist/serial-deck "$appdir/usr/lib/serial-deck"
+          install -m 0755 packaging/linux/AppRun "$appdir/AppRun"
+          install -m 0644 packaging/linux/serial-deck.desktop "$appdir/serial-deck.desktop"
+          install -m 0644 packaging/icons/serial-deck-256.png "$appdir/serial-deck.png"
+          desktop-file-validate "$appdir/serial-deck.desktop"
+          ARCH=x86_64 "$RUNNER_TEMP/appimagetool" --appimage-extract-and-run "$appdir" "dist/SerialDeck-$version-x86_64.AppImage"
+      - name: AppImage smoke test (extract-and-run, no FUSE)
+        run: |
+          set -euo pipefail
+          img=$(ls dist/*.AppImage)
+          chmod +x "$img"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          python packaging/smoke_test.py "$img"
+      - name: Debian package
+        run: packaging/linux/build-deb.sh dist/serial-deck "${{ needs.prepare.outputs.version }}" dist
+      - name: Debian package install/upgrade/remove in clean containers
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/*.deb)
+          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            echo "::group::$image"
+            docker run --rm -v "$PWD:/w" -w /w "$image" sh -ec "
+              apt-get update -qq && apt-get install -y -qq python3 >/dev/null
+              apt-get install -y -qq ./$deb >/dev/null
+              test -x /usr/bin/serial-deck-cli
+              python3 packaging/smoke_test.py /usr/bin/serial-deck-cli
+              apt-get install -y -qq --reinstall ./$deb >/dev/null
+              apt-get remove -y -qq serial-deck >/dev/null
+              test ! -e /usr/bin/serial-deck-cli
+              test ! -d /opt/serial-deck
+            "
+            echo "::endgroup::"
+          done
+      - name: GPG signatures
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${GPG_KEY:-}" ] || exit 0
+          export GNUPGHOME=$(mktemp -d)
+          printf '%s' "$GPG_KEY" | gpg --batch --import
+          for f in dist/*.AppImage dist/*.deb; do gpg --batch --yes --armor --detach-sign "$f"; done
+          rm -rf "$GNUPGHOME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.asc
+
+  publish:
+    needs: [prepare, python-dist, windows, macos, linux]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* -R "$REPO" --clobber
+          else
+            gh release create "$TAG" artifacts/* -R "$REPO" --title "Serial Deck ${TAG#v}" --generate-notes
+          fi

@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import ipc
+    from . import ipc, runtime
 except ImportError:
     import ipc
+    import runtime
 
 ROOT = Path(__file__).resolve().parent
 SERVER = ROOT / "mcp_server.py"
@@ -77,7 +78,7 @@ _SDK_CACHE_S = 30.0  # re-check soon after the user runs the displayed pip comma
 
 def sdk_installed(python: str) -> bool:
     """Whether `python` can import the MCP SDK; cached (a cold start can take seconds)."""
-    if python == sys.executable:
+    if runtime.frozen() or python == sys.executable:  # a bundle carries the SDK in itself
         import importlib.util
         try:
             return importlib.util.find_spec("mcp.server.mcpserver") is not None
@@ -101,15 +102,22 @@ def _probe_sdk(python: str) -> bool:
     return result.returncode == 0
 
 
+def server_command(policy: str) -> list[str]:
+    """argv that starts the MCP server: this bundle's console executable, or `python -m`."""
+    if runtime.frozen():
+        return runtime.self_command("mcp", "--allow", policy)
+    # `-m` works for a checkout and an installed wheel alike.
+    return [python_executable(), "-m", "serial_deck.mcp_server", "--allow", policy]
+
+
 def install_commands(policy: str = "interact") -> dict[str, str]:
     python = python_executable()
-    # `-m` works for a checkout and an installed wheel alike.
-    args = ["-m", "serial_deck.mcp_server", "--allow", policy]
-    config = {"mcpServers": {"serial-deck": {"command": python, "args": args}}}
+    command_argv = server_command(policy)
+    config = {"mcpServers": {"serial-deck": {"command": command_argv[0], "args": command_argv[1:]}}}
     # Arguments after `--` go to `claude`/`codex`, not the shell, so no `&` there.
-    command = " ".join(_quote(part) for part in [python, *args])
+    command = " ".join(_quote(part) for part in command_argv)
     return {
-        "pip": _command([python, "-m", "pip", "install", "serial-deck[mcp]"]),
+        "pip": "" if runtime.frozen() else _command([python, "-m", "pip", "install", "serial-deck[mcp]"]),
         "claude": f"claude mcp add serial-deck -s user -- {command}",
         "codex": f"codex mcp add serial-deck -- {command}",
         "json": json.dumps(config, indent=2),
@@ -209,7 +217,7 @@ def _parent_name(pid: int) -> str:
 def overview() -> dict[str, Any]:
     python = python_executable()
     return {
-        "server": "python -m serial_deck.mcp_server",
+        "server": " ".join(server_command("observe")[:-2]),
         "python": python,
         "sdk_installed": sdk_installed(python),
         "registrations": registrations(),

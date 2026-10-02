@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Callable
 
 try:
-    from . import ipc
+    from . import ipc, runtime
     from .uart_client import HUB_SCHEME, is_device_port, port_identity
 except ImportError:
     import ipc
+    import runtime
     from uart_client import HUB_SCHEME, is_device_port, port_identity
 
 MULTIPORT_PROTOCOL = "serial-deck-multiport-v1"
@@ -323,10 +324,15 @@ class HubProcessManager:
             self.multiport = existing.multiport
             self.owns_process = False
             return False
-        if not self.hub_script.is_file():
-            raise RuntimeError(f"hub script not found: {self.hub_script}")
-        command = [sys.executable, str(self.hub_script), "--baud", str(self.baud),
-                   "--socket", self.socket_path]
+        hub_args = ["--baud", str(self.baud), "--socket", self.socket_path]
+        if self._explicit_hub_script:
+            if not self.hub_script.is_file():
+                raise RuntimeError(f"hub script not found: {self.hub_script}")
+            command = [sys.executable, str(self.hub_script), *hub_args]
+        elif runtime.frozen():
+            command = runtime.self_command("hub", *hub_args)  # this bundle, no Python
+        else:
+            command = [sys.executable, "-m", "serial_deck.hub", *hub_args]
         # Detach the daemon from this process's console and Ctrl+C group.
         detach: dict[str, object] = (
             {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
@@ -381,11 +387,31 @@ class HubProcessManager:
         self.owns_process = False
         self.owns_port = False
 
-    def shutdown(self) -> None:
-        """Explicit maintenance operation; the daemon refuses active clients/flash."""
-        self.request_control("shutdown")
+    def shutdown(self, timeout: float = 15.0) -> int | None:
+        """Stop the daemon and wait until its process has really exited.
+
+        The daemon refuses (RuntimeError) while clients or a flash are active;
+        once it acknowledges, it is committed to exiting. Returns its pid.
+        Raises TimeoutError if it is still alive after `timeout`.
+        """
+        response = self.request_control("shutdown")
+        pid = response.get("pid") if type(response.get("pid")) is int else None
+        deadline = time.monotonic() + timeout
         if self.process is not None:
-            self.process.wait(timeout=5)
+            try:
+                self.process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                raise TimeoutError(f"hub pid {self.process.pid} did not exit") from None
+            return pid
+        while pid is not None and ipc.pid_alive(pid):
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"hub pid {pid} did not exit within {timeout:g} s")
+            time.sleep(0.05)
+        while self.socket_ready():  # pid-less legacy hubs: wait for the endpoint to go
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"hub at {self.socket_path} did not stop within {timeout:g} s")
+            time.sleep(0.05)
+        return pid
 
 
 class HubRegistry:

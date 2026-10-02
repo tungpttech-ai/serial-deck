@@ -1,0 +1,18 @@
+#!/bin/sh
+# Remove installed trees of older versions that no running process still uses.
+# Never touches the current version or a tree with a live process inside it.
+set -e
+case "$1" in configure) ;; *) exit 0 ;; esac
+current=$(readlink -f /usr/bin/serial-deck-cli 2>/dev/null | xargs -r dirname)
+for dir in /opt/serial-deck/*/; do
+    dir=${dir%/}
+    [ -d "$dir" ] || continue
+    [ "$dir" = "$current" ] && continue
+    in_use=0
+    for exe in /proc/[0-9]*/exe; do
+        target=$(readlink "$exe" 2>/dev/null) || continue
+        case "$target" in "$dir"/*) in_use=1; break ;; esac
+    done
+    [ "$in_use" = 0 ] && rm -rf "$dir"
+done
+exit 0

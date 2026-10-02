@@ -24,11 +24,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
+    from . import runtime
     from .hub_client import DEFAULT_SOCKET
-    from .web import HubStartupError, WebBackend
+    from .web import BrowserLifecycle, HubStartupError, WebBackend
 except ImportError:
+    import runtime
     from hub_client import DEFAULT_SOCKET
-    from web import HubStartupError, WebBackend
+    from web import BrowserLifecycle, HubStartupError, WebBackend
 
 
 APP_TITLE = "Serial Deck"
@@ -289,19 +291,93 @@ def build_parser() -> argparse.ArgumentParser:
                         help="report whether pywebview can open a window, then exit")
     parser.add_argument("--install-desktop-entry", action="store_true",
                         help="add a launcher to ~/.local/share/applications, then exit")
+    parser.add_argument("--browser", action="store_true",
+                        help="use the default browser instead of a native window")
+    parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser
+
+
+def use_browser(args: argparse.Namespace, runtime_check: Callable[[], str | None]) -> str | None:
+    """Why this launch uses the browser instead of a window, or None for a window."""
+    if getattr(args, "browser", False):
+        return "requested with --browser"
+    if runtime.frozen() and sys.platform.startswith("linux"):
+        return "Linux app bundles use your browser"  # no portable GTK/WebKit in a bundle
+    if runtime.frozen():
+        return runtime_check()  # e.g. no WebView2 runtime: fall back instead of failing
+    return None
+
+
+def run_browser(args: argparse.Namespace, backend: Any,
+                open_url: Callable[[str], bool] | None = None,
+                poll: float = 1.0) -> int:
+    """Serve the dashboard to the default browser until Quit or every tab is gone."""
+    controller = AppController(backend)
+    lifecycle = BrowserLifecycle(controller.close_blocker)
+    backend.handler.lifecycle = lifecycle
+    stop = threading.Event()
+    previous = {}
+
+    def on_signal(_signum: int, _frame: Any) -> None:
+        if controller.close_blocker() is None:
+            stop.set()
+        else:
+            print("Shutdown requested; waiting for the flash to finish.", file=sys.stderr, flush=True)
+            lifecycle.quit_requested.set()
+
+    for name in SHUTDOWN_SIGNALS:
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                previous[sig] = signal.signal(sig, on_signal)
+            except (OSError, ValueError):
+                pass
+    try:
+        backend.start_in_thread()
+        wait_for_backend(backend.port, backend.instance_token)
+        print(f"Serial Deck dashboard: {backend.url}", flush=True)
+        opened = (open_url or runtime.open_browser)(backend.url)
+        if not opened:
+            print(f"Could not start a browser; open {backend.url} yourself.", file=sys.stderr, flush=True)
+        while not stop.is_set():
+            if (lifecycle.quit_requested.is_set() or lifecycle.idle_expired()) \
+                    and controller.close_blocker() is None:
+                break
+            stop.wait(poll)
+    finally:
+        for sig, handler in previous.items():
+            try:
+                signal.signal(sig, handler)
+            except (OSError, ValueError):
+                pass
+        backend.close()
+    return 0
 
 
 def run_app(args: argparse.Namespace,
             backend_factory: Callable[..., Any] = WebBackend,
             webview_module: Any = None,
             runtime_check: Callable[[], str | None] = check_webview_runtime) -> int:
-    if webview_module is None:
+    browser_reason = None if webview_module is not None else use_browser(args, runtime_check)
+    if webview_module is None and browser_reason is None:
         error = runtime_check()
         if error:
             print(f"Serial Deck App cannot start: {error}", file=sys.stderr)
             return 3
         import webview as webview_module
+    if browser_reason is not None:
+        print(f"Opening the dashboard in your browser ({browser_reason.splitlines()[0]}).",
+              file=sys.stderr, flush=True)
+        try:
+            backend = backend_factory(APP_HOST, 0, args.port, args.baud, args.socket,
+                                      args.attach_only, args.elf)
+        except HubStartupError as exc:
+            print(f"Hub startup failed: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(f"Cannot bind the dashboard on {APP_HOST}: {exc}", file=sys.stderr)
+            return 2
+        return run_browser(args, backend)
 
     # Always a fresh ephemeral loopback port: never another app's server.
     try:

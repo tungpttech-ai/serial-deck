@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from . import mcp_status
+    from . import mcp_status, runtime
     from .hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from .uart_client import (
@@ -51,6 +51,7 @@ try:
     )
 except ImportError:
     import mcp_status
+    import runtime
     from hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from uart_client import (
@@ -236,7 +237,7 @@ class ElfSymbolizer:
         if not addresses:
             return []
         try:
-            result = subprocess.run(
+            result = runtime.run_host(  # a host tool: undo the bundle's loader state
                 [self.tool_path, "-pfiaC", "-e", self.elf_path, *addresses],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=1.0, check=False,
@@ -908,6 +909,50 @@ class FlashCheck:
         return bool(self.active or self.unknown)
 
 
+class BrowserLifecycle:
+    """When a browser-mode app (no native window) may stop serving.
+
+    It stops on Quit from the dashboard, or once every dashboard tab has been
+    gone for `idle_s` (after at least one connected, or `first_tab_s` after
+    start when the browser never came). Both obey the same flash guard as
+    closing the app window: never while a flash runs or a hub's state is unknown.
+    """
+
+    def __init__(self, blocker, idle_s: float = 60.0, first_tab_s: float = 120.0) -> None:
+        self._blocker = blocker  # () -> str | None, like AppController.close_blocker
+        self.idle_s = idle_s
+        self.first_tab_s = first_tab_s
+        self._lock = threading.Lock()
+        self._streams = 0
+        self._seen = False
+        self._last_change = time.monotonic()
+        self.quit_requested = threading.Event()
+
+    def stream_opened(self) -> None:
+        with self._lock:
+            self._streams += 1
+            self._seen = True
+            self._last_change = time.monotonic()
+
+    def stream_closed(self) -> None:
+        with self._lock:
+            self._streams = max(0, self._streams - 1)
+            self._last_change = time.monotonic()
+
+    def request_quit(self) -> str | None:
+        blocker = self._blocker()
+        if blocker is None:
+            self.quit_requested.set()
+        return blocker
+
+    def idle_expired(self) -> bool:
+        with self._lock:
+            if self._streams:
+                return False
+            limit = self.idle_s if self._seen else self.first_tab_s
+            return time.monotonic() - self._last_change >= limit
+
+
 ASSET_ROOT = Path(__file__).resolve().with_name("web_assets")
 ASSET_TYPES = {
     ".js": "text/javascript; charset=utf-8",
@@ -991,7 +1036,8 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/instance":
-            self._send_json({"app": "serial-deck-web", "instance": self.instance_token})
+            self._send_json({"app": "serial-deck-web", "instance": self.instance_token,
+                             "browser_mode": getattr(self, "lifecycle", None) is not None})
             return
 
         if path == "/api/connections":
@@ -1046,6 +1092,9 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             q = bridge.register_client()
+            lifecycle = getattr(self, "lifecycle", None)
+            if lifecycle is not None:
+                lifecycle.stream_opened()
             try:
                 # Send initial status & history replay
                 init_msg = json.dumps({"type": "init", "status": bridge.get_status(),
@@ -1068,6 +1117,8 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                 pass
             finally:
                 bridge.unregister_client(q)
+                if lifecycle is not None:
+                    lifecycle.stream_closed()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -1086,6 +1137,18 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            if path == "/api/quit":
+                lifecycle = getattr(self, "lifecycle", None)
+                if lifecycle is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+                    return
+                blocker = lifecycle.request_quit()
+                if blocker:
+                    self._send_json({"ok": False, "error": blocker}, status=HTTPStatus.CONFLICT)
+                else:
+                    self._send_json({"ok": True})
+                return
+
             if path == "/api/connections":
                 conn_id, bridge = self.connections.create()
                 self._send_json({"ok": True, "id": conn_id, "status": bridge.get_status()})
@@ -1546,6 +1609,8 @@ HTML_PAGE = """<!DOCTYPE html>
           <option value="linux" selected>Linux / Raw</option>
           <option value="control">Control</option>
         </select>
+
+        <button id="quitBtn" onclick="quitApp()" title="Stop Serial Deck (the hub keeps running for other tools)" class="hidden px-3 py-1 rounded text-xs font-bold border border-brand-border text-brand-muted hover:text-brand-danger hover:border-brand-danger transition">Quit</button>
 
         <button id="connectBtn" onclick="toggleConnect()" class="px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-accent hover:bg-brand-accentHover text-brand-bg shadow">
           <i class="fa-solid fa-plug text-xs"></i>
@@ -3144,6 +3209,18 @@ HTML_PAGE = """<!DOCTYPE html>
     // Startup
     renderNetHistory();
     scanPorts();
+
+    // Browser mode (no app window): offer Quit, which the app refuses mid-flash.
+    fetch('/api/instance').then(r => r.json()).then(info => {
+      if (info.browser_mode) document.getElementById('quitBtn').classList.remove('hidden');
+    }).catch(() => {});
+
+    async function quitApp() {
+      const res = await fetch('/api/quit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json().catch(() => ({}));
+      if (!data.ok) { alert(data.error || 'Cannot quit right now.'); return; }
+      document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#cfd8dc;background:#111318;height:100vh">Serial Deck stopped. You can close this tab.</div>';
+    }
     bootstrapConnections();
   </script>
 </body>
@@ -3291,7 +3368,7 @@ class WebBackend:
                 self.server.server_close()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     try:
         from .ipc import configure_console_streams
     except ImportError:
@@ -3308,7 +3385,7 @@ def main() -> int:
     parser.add_argument("--attach-only", action="store_true", help="require an existing hub")
     parser.add_argument("--elf", default="", help="application ELF file for address symbolization")
     parser.add_argument("--open-browser", action="store_true", help="automatically open browser on startup")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         backend = WebBackend(args.host, args.port_web, args.port, args.baud,
@@ -3328,8 +3405,7 @@ def main() -> int:
     print(f"============================================================", flush=True)
 
     if args.open_browser:
-        import webbrowser
-        threading.Thread(target=lambda: (time.sleep(0.5), webbrowser.open(url)), daemon=True).start()
+        threading.Thread(target=lambda: (time.sleep(0.5), runtime.open_browser(url)), daemon=True).start()
 
     install_shutdown_signals()
     try:

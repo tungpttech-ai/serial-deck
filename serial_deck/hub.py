@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -605,7 +606,11 @@ class UartHub:
                 serial.close()
 
 
-def main() -> int:
+# `hub --status` / `hub --shutdown` exit codes, for installers and scripts.
+EXIT_OK, EXIT_NOT_RUNNING, EXIT_REFUSED, EXIT_TIMEOUT = 0, 3, 4, 5
+
+
+def main(argv: list[str] | None = None) -> int:
     ipc.configure_console_streams()
     parser = argparse.ArgumentParser(description="UART fan-out hub")
     parser.add_argument("--port", help="optional initial UART path or tcp:// / udp:// endpoint claim")
@@ -617,7 +622,7 @@ def main() -> int:
     maintenance = parser.add_mutually_exclusive_group()
     maintenance.add_argument("--status", action="store_true", help="show the running daemon and its channels")
     maintenance.add_argument("--shutdown", action="store_true", help="stop daemon only when no data clients or flash remain")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.status or args.shutdown:
         try:
@@ -625,11 +630,24 @@ def main() -> int:
         except ImportError:
             from hub_client import HubProcessManager
         manager = HubProcessManager(socket_path=args.socket)
-        if args.shutdown:
-            manager.shutdown()
-        else:
+        if not manager.socket_ready():
+            print(f"no hub is running at {args.socket}", file=sys.stderr)
+            return EXIT_NOT_RUNNING
+        if not args.shutdown:
             print(json.dumps(manager.get_status(), indent=2))
-        return 0
+            return EXIT_OK
+        try:
+            pid = manager.shutdown()
+        except TimeoutError as exc:
+            print(f"hub did not stop: {exc}", file=sys.stderr)
+            return EXIT_TIMEOUT
+        except (OSError, RuntimeError) as exc:
+            if not manager.socket_ready():
+                return EXIT_OK  # it went away while we asked
+            print(f"hub refused to stop: {exc}", file=sys.stderr)
+            return EXIT_REFUSED
+        print(f"hub stopped (pid {pid})" if pid else "hub stopped")
+        return EXIT_OK
 
     # Clean shutdown (sockets unlinked, UART closed) on kill / terminal hang-up,
     # and on SIGINT even when it was inherited as ignored from a background job.

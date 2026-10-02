@@ -224,7 +224,7 @@ class HubControlDeck(ControlDeck):
         self.root.destroy()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     try:
         from .ipc import configure_console_streams
     except ImportError:
@@ -238,7 +238,7 @@ def main() -> None:
     parser.add_argument("--attach-only", action="store_true", help="require an existing hub")
     parser.add_argument("--auto-connect", action="store_true",
                         help="claim the selected UART and connect immediately")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     root = tk.Tk()
     try:
         deck = HubControlDeck(

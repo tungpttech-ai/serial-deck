@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Serial Deck
+GenericName=Serial Console
+Comment=Shared serial console, UART hub and ESP32 flashing
+Exec=serial-deck %U
+Icon=serial-deck
+Terminal=false
+Categories=Development;Electronics;
+StartupNotify=true
