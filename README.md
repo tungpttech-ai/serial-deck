@@ -20,15 +20,41 @@ another window and an agent queries the device, all on the same port, without
   commands and (when you allow it) reset or flash. See [docs/MCP.md](docs/MCP.md).
 - **Linux, macOS and Windows.**
 
-## Install
+## Download
 
-Python 3.10 or newer.
+Installers are on the [Releases page](https://github.com/tungpttech-ai/serial-deck/releases/latest).
+No Python needed.
+
+| OS | File | Notes |
+|---|---|---|
+| Windows 10/11 (x64) | `SerialDeck-<version>-Setup.exe` | Per-user install, no admin. A portable `-win-x64.zip` is also provided |
+| macOS 15+ (Apple silicon) | `SerialDeck-<version>-macos-arm64.dmg` | Drag *Serial Deck* to Applications |
+| macOS 15+ (Intel) | `SerialDeck-<version>-macos-x86_64.dmg` | |
+| Linux x86_64 (Ubuntu 22.04+, Debian 12+) | `serial-deck_<version>_amd64.deb` or `SerialDeck-<version>-x86_64.AppImage` | Opens the dashboard in your browser |
+
+The app is the Web dashboard in its own window; on Linux it uses your browser.
+Every installer also ships `serial-deck-cli` for the hub, CLI and MCP server
+(`serial-deck-cli --help`). `SHA256SUMS.txt` lists every file's checksum.
+
+Builds are currently **not code-signed**:
+
+- **Windows:** SmartScreen may warn on first run. Choose *More info → Run anyway*.
+- **macOS:** the first time, right-click *Serial Deck* in Applications and choose *Open*.
+- **Linux:** add yourself to the `dialout` (Debian/Ubuntu) or `uucp` (Arch) group
+  for serial access, then log out and in. Without FUSE, run the AppImage with
+  `--appimage-extract-and-run`.
+
+## Install with pip
+
+Python 3.10 or newer. Serial Deck is not on PyPI yet; install the wheel from a
+release, or from a checkout:
 
 ```bash
-python -m pip install serial-deck            # hub, Web, CLI, flashing
-python -m pip install "serial-deck[app]"     # + native app window (pywebview)
-python -m pip install "serial-deck[mcp]"     # + MCP server for AI agents
+python -m pip install "serial-deck[app,mcp] @ https://github.com/tungpttech-ai/serial-deck/releases/download/v0.2.0/serial_deck-0.2.0-py3-none-any.whl"
 ```
+
+`[app]` adds the native window (pywebview), `[mcp]` the MCP server; the base
+package has the hub, Web dashboard, CLI and flashing.
 
 From a checkout:
 

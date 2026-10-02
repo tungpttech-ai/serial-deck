@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 (2026-10-02)
+
+Native installers: no Python needed.
+
+- Windows: per-user installer (`Setup.exe`) and a portable zip. Setup stops an
+  idle hub before replacing files and refuses while Serial Deck is in use.
+- macOS 15+: `.dmg` for Apple silicon and Intel.
+- Linux: AppImage and `.deb` for Ubuntu 22.04+ / Debian 12+; the app opens the
+  dashboard in your browser.
+- One `serial-deck-cli` in every bundle runs the hub, CLI and MCP server; the
+  MCP page shows the bundle's own registration command.
+- `app --browser` mode with a Quit button; it never quits during a flash.
+- `hub --shutdown` waits until the hub process has exited and returns
+  scriptable exit codes (0 stopped, 3 not running, 4 refused, 5 timeout).
+- Flashing a frozen bundle runs the bundled esptool in-process;
+  `flash --self-test` checks every flasher stub.
+- Release builds are reproducible from hash-locked dependencies per platform,
+  smoke-tested on each OS, and signed once certificates are configured.
+
 ## 0.1.0 (2026-10-02)
 
 First public release.
