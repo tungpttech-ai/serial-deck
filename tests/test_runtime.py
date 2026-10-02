@@ -81,6 +81,17 @@ class HostExecTest(unittest.TestCase):
         self.assertEqual(code, 7)
         self.assertEqual(runtime.host_exec([]), 2)
 
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_run_host_timeout_kills_the_whole_tree_promptly(self):
+        import subprocess
+        import time
+        script = ("import subprocess, sys, time; "
+                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); time.sleep(30)")
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            runtime.run_host([sys.executable, "-c", script], timeout=0.5, capture_output=True)
+        self.assertLess(time.monotonic() - started, 4.0)
+
     def test_launcher_routes_host_exec(self):
         with patch.object(runtime, "host_exec", return_value=5) as host_exec:
             self.assertEqual(launcher.main(["host-exec", "--", "x"]), 5)

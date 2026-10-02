@@ -179,6 +179,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # `hub --status` exits 3 when no hub runs; that is a result, not an error.
+          $PSNativeCommandUseErrorActionPreference = $false
           $setup = (Get-ChildItem dist\installer\SerialDeck-*-Setup.exe | Select-Object -First 1).FullName
           $app = Join-Path $env:LOCALAPPDATA "Programs\Serial Deck"
           $cli = Join-Path $app "serial-deck-cli.exe"
@@ -195,11 +197,14 @@ jobs:
             Write-Host "setup exit code $($p.ExitCode)"
             return $p.ExitCode
           }
+          function Stage($text) { Write-Host "::notice::installer test: $text" }
           # 1. First install (no previous CLI, no hub).
+          Stage "first install"
           if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "first install failed" }
           if (-not (Test-Path $cli)) { throw "not installed" }
           python packaging/smoke_test.py $cli
           # 2. Upgrade while a dashboard holds a hub client: setup must refuse and change nothing.
+          Stage "upgrade must refuse while a client is attached"
           $ready = Join-Path $env:RUNNER_TEMP "client-ready.txt"
           Remove-Item $ready -ErrorAction SilentlyContinue
           $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -218,21 +223,34 @@ jobs:
           if ((Get-Item $cli).LastWriteTimeUtc -ne $before) { throw "files changed despite refusal" }
           $holder.StandardInput.Close()     # the holder stops its monitor and exits
           if (-not $holder.WaitForExit(30000)) { throw "test client did not exit" }
+          # Wait until the hub reports no data client (or is gone). Native exit codes
+          # here are expected (3 = not running), so do not let them fail the step.
           for ($i = 0; $i -lt 30; $i++) {
-            $s = & $cli hub --status 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $raw = (& $cli hub --status 2>$null) -join "`n"
+            if ($LASTEXITCODE -eq 3) { break }
+            try { $s = $raw | ConvertFrom-Json } catch { $s = $null }
             if ($s -and $s.client_count -eq 0) { break }
             Start-Sleep 1
           }
+          $global:LASTEXITCODE = 0
           # 3. Upgrade with an idle hub running: setup stops it and succeeds.
-          & $cli hub --status | Out-Null
+          Stage "idle upgrade"
+          & $cli hub --status 2>&1 | Out-Null
+          Write-Host "hub before idle upgrade: exit $LASTEXITCODE"
+          $global:LASTEXITCODE = 0
           if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "idle upgrade failed" }
-          & $cli hub --status 2>$null; if ($LASTEXITCODE -ne 3) { throw "hub still running after upgrade" }
+          $statusOut = & $cli hub --status 2>&1
+          Write-Host "hub after idle upgrade: exit $LASTEXITCODE $statusOut"
+          if ($LASTEXITCODE -ne 3) { throw "hub still running after upgrade (exit $LASTEXITCODE)" }
           # 4. Uninstall removes everything it installed.
+          Stage "uninstall"
           $ulog = "$env:RUNNER_TEMP\uninstall.log"
           $p = Start-Process (Join-Path $app "unins000.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/LOG=`"$ulog`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content $ulog -Tail 40 -ErrorAction SilentlyContinue; throw "uninstall failed ($($p.ExitCode))" }
           for ($i = 0; $i -lt 20 -and (Test-Path (Join-Path $app "serial-deck.exe")); $i++) { Start-Sleep 1 }
           if (Test-Path (Join-Path $app "serial-deck.exe")) { throw "uninstall left files" }
+          Stage "all stages passed"
+          exit 0
       - name: Remove certificate
         if: always()
         shell: pwsh

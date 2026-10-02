@@ -158,11 +158,52 @@ def host_exec(args: list[str]) -> int:
     if os.name == "nt":
         import ctypes
         ctypes.WinDLL("kernel32").SetDllDirectoryW(None)
+        _kill_children_with_me()
     try:
         return subprocess.call(args, env=host_env())
     except OSError as exc:
         print(f"host-exec: cannot start {args[0]}: {exc}", file=sys.stderr)
         return 127
+
+
+def _kill_children_with_me() -> None:
+    """Put this helper in a Job Object that kills its whole tree when it dies.
+
+    run_host() kills the helper on timeout; with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    the host program (our child) dies with it instead of holding the pipes open.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class IO(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class EXTENDED(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BASIC), ("IoInfo", IO),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return
+    info = EXTENDED()
+    info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    kernel32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+    # The job handle stays open for this process's lifetime; when the helper is
+    # killed, the handle closes and Windows terminates every process in the job.
+    kernel32.AssignProcessToJobObject(wintypes.HANDLE(job), kernel32.GetCurrentProcess())
 
 
 def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None, **kwargs):
@@ -172,14 +213,32 @@ def run_host(args: list[str], timeout: float | None = None, input: str | bytes |
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
     if input is not None:
         kwargs["stdin"] = subprocess.PIPE
+    if os.name != "nt":
+        kwargs.setdefault("start_new_session", True)  # so the whole tree can be stopped
     process = popen_host(args, **kwargs)
     try:
         stdout, stderr = process.communicate(input, timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
+        _kill_tree(process)
+        try:
+            process.communicate(timeout=5)  # bounded: a stray descendant must not hang us
+        except subprocess.TimeoutExpired:
+            pass
         raise
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def _kill_tree(process) -> None:
+    """Kill a host process and its descendants (POSIX: its session; Windows: the
+    helper's kill-on-close Job Object takes the host program with it)."""
+    if os.name != "nt":
+        import signal
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    process.kill()
 
 
 def open_browser(url: str) -> bool:
