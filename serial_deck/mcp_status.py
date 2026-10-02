@@ -54,22 +54,8 @@ def python_executable() -> str:
     return sys.executable
 
 
-def _quote(arg: str) -> str:
-    """Quote one argument for the user's shell: PowerShell on Windows, else POSIX sh."""
-    if os.name == "nt":
-        if arg and all(c.isalnum() or c in "-_.:\\/=" for c in arg):
-            return arg
-        return "'" + arg.replace("'", "''") + "'"
-    import shlex
-    return shlex.quote(arg)
-
-
-def _command(parts: list[str]) -> str:
-    """A runnable command line; PowerShell needs `&` to call a quoted program path."""
-    line = " ".join(_quote(part) for part in parts)
-    if os.name == "nt" and line.startswith("'"):
-        return "& " + line
-    return line
+_quote = runtime.shell_quote
+_command = runtime.shell_command
 
 
 _SDK_CACHE: dict[str, tuple[float, bool]] = {}

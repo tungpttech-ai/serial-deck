@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"flash setup failed: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(command) if args.json else " ".join(command), flush=True)
+    print(json.dumps(command) if args.json else runtime.shell_command(command), flush=True)
     if args.dry_run:
         return 0
     if not args.yes:

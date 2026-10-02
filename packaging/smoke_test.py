@@ -23,21 +23,40 @@ from pathlib import Path
 DEADLINE = 60.0
 
 
-def clean_env(runtime: Path) -> dict[str, str]:
+def clean_env(runtime: Path, work: Path) -> dict[str, str]:
     keep = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
-            "USERNAME", "USERDOMAIN", "LANG", "DISPLAY", "XDG_RUNTIME_DIR", "COMSPEC")
+            "USERNAME", "USERDOMAIN", "LANG", "DISPLAY", "XDG_RUNTIME_DIR", "COMSPEC",
+            "APPIMAGE_EXTRACT_AND_RUN")
     env = {k: v for k, v in os.environ.items() if k in keep}
-    system = [os.environ.get("SYSTEMROOT", r"C:\Windows") + r"\System32"] if os.name == "nt" else ["/usr/bin", "/bin"]
-    env["PATH"] = os.pathsep.join(system)
+    # A PATH holding only an empty directory plus the OS's own tools; any
+    # python/esptool that is still reachable fails the test (the bundle must not
+    # depend on one).
+    empty = work / "bin"
+    empty.mkdir(exist_ok=True)
+    system = ([os.environ.get("SYSTEMROOT", r"C:\Windows") + r"\System32"] if os.name == "nt"
+              else ["/bin"] if Path("/bin/sh").exists() else ["/usr/bin"])
+    env["PATH"] = os.pathsep.join([str(empty), *system])
+    for tool in ("python", "python3", "esptool", "esptool.py"):
+        found = shutil.which(tool, path=env["PATH"])
+        if found and os.name != "nt":
+            # /bin is a symlink to /usr/bin on merged-usr systems; shadow those.
+            shadow = empty / tool
+            shadow.write_text("#!/bin/sh\necho 'smoke: external interpreter used' >&2\nexit 97\n")
+            shadow.chmod(0o755)
     env["SERIAL_DECK_RUNTIME_DIR"] = str(runtime)
     env["PYTHONUTF8"] = "1"
     return env
 
 
+CWD: Path | None = None  # set to a scratch directory outside the checkout
+
+
 def run(cli: str, env: dict[str, str], *args: str, check: bool = True, timeout: float = DEADLINE,
         stdin: str | None = None) -> subprocess.CompletedProcess:
     result = subprocess.run([cli, *args], env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=timeout, input=stdin)
+                            errors="replace", timeout=timeout, input=stdin, cwd=CWD)
+    if "external interpreter used" in result.stderr:
+        raise SystemExit(f"FAILED: {' '.join(args)} ran an external python/esptool")
     print(f"$ {Path(cli).name} {' '.join(args)} -> {result.returncode}")
     if check and result.returncode != 0:
         raise SystemExit(f"FAILED: {result.stdout}\n{result.stderr}")
@@ -60,6 +79,72 @@ def make_fake_build(root: Path) -> Path:
     return build
 
 
+def stop_group(process: subprocess.Popen) -> None:
+    """Stop a process and everything it started (AppImage runtime + real program)."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
+    else:
+        import signal
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def free_port() -> int:
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def mcp_tools(argv: list[str], env: dict[str, str]) -> list[dict]:
+    """Talk to an MCP stdio server like a client does: wait for each reply."""
+    process = subprocess.Popen(argv, env=env, cwd=CWD, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    def send(message: dict) -> None:
+        process.stdin.write(json.dumps(message) + "\n")
+        process.stdin.flush()
+
+    def reply(request_id: int) -> dict:
+        deadline = time.monotonic() + DEADLINE
+        while time.monotonic() < deadline:
+            line = process.stdout.readline()
+            if not line:
+                raise SystemExit(f"FAILED: MCP server exited: {process.stderr.read()[-800:]}")
+            message = json.loads(line)  # every stdout line must be JSON-RPC
+            if message.get("id") == request_id:
+                return message
+        raise SystemExit("FAILED: MCP server did not answer")
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "smoke", "version": "1"}}})
+        reply(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        return reply(2)["result"]["tools"]
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def mcp_registration(port: int) -> list[str]:
+    """The MCP server command the running bundle tells users to register (its MCP page)."""
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/mcp", timeout=10) as response:
+        data = json.loads(response.read())
+    config = json.loads(data["install"]["observe"]["json"])["mcpServers"]["serial-deck"]
+    return [config["command"], *config["args"]]
+
+
 def wait_url(url: str, timeout: float = DEADLINE) -> str:
     deadline = time.monotonic() + timeout
     while True:
@@ -76,15 +161,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("cli")
     parser.add_argument("--gui")
+    parser.add_argument("--window", action="store_true",
+                        help="also open the real app window (needs a desktop session)")
     args = parser.parse_args()
+    global CWD
     cli = str(Path(args.cli).resolve())
     work = Path(tempfile.mkdtemp(prefix="sd-smoke-"))
+    CWD = work  # never the checkout: the bundle must not read sources from cwd
     runtime = work / "rt"
-    env = clean_env(runtime)
-    for tool in ("python", "python3", "esptool"):
-        found = shutil.which(tool, path=env["PATH"])
-        if found and os.name != "nt":
-            print(f"note: {tool} exists at {found} on the system PATH; the bundle must not use it")
+    env = clean_env(runtime, work)
     web = None
     try:
         out = run(cli, env, "--version").stdout
@@ -100,9 +185,13 @@ def main() -> int:
         assert "flash" in out and "--build-dir" in out and "--yes" in out, out
 
         # The dashboard must spawn its own hub through the frozen dispatcher.
-        port = 18765
-        web = subprocess.Popen([cli, "web", "--port-web", str(port)], env=env,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        port = free_port()  # never a dashboard left over from an earlier run
+        # Own process group: an AppImage runs the real program as a child, and
+        # stopping only the outer process would leave the dashboard running.
+        group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+                 else {"start_new_session": True})
+        web = subprocess.Popen([cli, "web", "--port-web", str(port)], env=env, cwd=CWD,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **group)
         page = wait_url(f"http://127.0.0.1:{port}/")
         assert "<title>Serial Deck</title>" in page
         asset = wait_url(f"http://127.0.0.1:{port}/assets/vendor/xterm/5.5.0/xterm.min.js")
@@ -112,29 +201,39 @@ def main() -> int:
         hub_pid = info["pid"]
         print(f"hub pid {hub_pid} spawned by the bundle")
 
-        requests = [
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "smoke", "version": "1"}}},
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-        ]
-        out = run(cli, env, "mcp", "--allow", "observe",
-                  stdin="".join(json.dumps(r) + "\n" for r in requests), check=False).stdout
-        replies = [json.loads(line) for line in out.splitlines() if line.strip()]
-        tools = next(r for r in replies if r.get("id") == 2)["result"]["tools"]
+        tools = mcp_tools([cli, "mcp", "--allow", "observe"], env)
         names = sorted(t["name"] for t in tools)
         assert "serial_connect" in names and "serial_flash_preview" in names, names
         assert "serial_reset" not in names, names  # observe policy
         assert all("inputSchema" in t for t in tools)
         print(f"mcp: {len(names)} tools")
 
+        # The generated MCP registration must itself start a working server.
+        hub_cmd = json.loads(run(cli, env, "hub", "--status").stdout)
+        assert hub_cmd["pid"] == hub_pid
+        mcp_cmd = mcp_registration(port)
+        assert Path(mcp_cmd[0]).name.startswith(("serial-deck-cli", "SerialDeck")), mcp_cmd
+        mcp_cmd = [*mcp_cmd[:-1], "observe"] if mcp_cmd[-2] == "--allow" else mcp_cmd
+        assert any(t["name"] == "serial_connect" for t in mcp_tools(mcp_cmd, env))
+        print(f"registered MCP command works: {mcp_cmd[:2]}")
+
+        if args.window or os.environ.get("DISPLAY") or os.name == "nt" or sys.platform == "darwin":
+            tk = run(cli, env, "desktop", "--smoke-test", check=False, timeout=120)
+            assert tk.returncode == 0 and "SMOKE TK OK" in tk.stdout, \
+                f"Tk desktop window failed: {tk.stdout[-300:]} {tk.stderr[-600:]}"
+            print(tk.stdout.strip().splitlines()[-1])
+
         if args.gui:
             gui = run(args.gui, env, "app", "--check-runtime", check=False)
             print(f"gui runtime: {gui.stdout.strip() or gui.stderr.strip()}")
+            assert gui.returncode == 0, "the app's window runtime is not usable"
+            if args.window:
+                window = run(args.gui, env, "app", "--smoke-test", check=False, timeout=120)
+                assert window.returncode == 0 and "SMOKE WINDOW OK" in window.stdout, \
+                    f"app window did not load the dashboard: {window.stdout[-400:]} {window.stderr[-400:]}"
+                print("app window loaded the dashboard")
 
-        web.terminate()
-        web.wait(timeout=20)
+        stop_group(web)
         web = None
         deadline = time.monotonic() + 20
         while run(cli, env, "hub", "--shutdown", check=False).returncode == 4:  # web still detaching
@@ -146,7 +245,7 @@ def main() -> int:
         return 0
     finally:
         if web is not None:
-            web.kill()
+            stop_group(web)
         run(cli, env, "hub", "--shutdown", check=False)
         shutil.rmtree(work, ignore_errors=True)
 

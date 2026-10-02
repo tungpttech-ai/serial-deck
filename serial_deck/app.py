@@ -102,10 +102,35 @@ def _qt_runtime_error() -> str | None:
     return "Qt unavailable: no Qt WebEngine binding is installed"
 
 
+WEBVIEW2_URL = "https://developer.microsoft.com/microsoft-edge/webview2/"
+
+
+def _webview2_runtime_error() -> str | None:
+    """None when the Edge WebView2 runtime is installed (per-machine or per-user)."""
+    import winreg
+    client = r"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    places = [(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\"
+               r"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+              (winreg.HKEY_LOCAL_MACHINE, client), (winreg.HKEY_CURRENT_USER, client)]
+    for hive, key in places:
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                version, _kind = winreg.QueryValueEx(handle, "pv")
+        except OSError:
+            continue
+        if version and version != "0.0.0.0":
+            return None
+    return f"the Microsoft Edge WebView2 runtime is not installed (get it at {WEBVIEW2_URL})"
+
+
 def check_webview_runtime() -> str | None:
     """Return an actionable error when pywebview cannot open a window."""
     if importlib.util.find_spec("webview") is None:
         return f"pywebview is not installed for {sys.executable}.\n\n{RUNTIME_HELP}"
+    if os.name == "nt":
+        return _webview2_runtime_error()
+    if sys.platform == "darwin":
+        return None if importlib.util.find_spec("WebKit") else "the PyObjC WebKit framework is missing"
     if not sys.platform.startswith("linux"):
         return None
     forced = os.environ.get("PYWEBVIEW_GUI", "").lower()
@@ -159,10 +184,18 @@ class AppController:
         self._shutdown_thread: threading.Thread | None = None
         self.closed = threading.Event()
 
+    window_shown = False
+
     def attach(self, window: Any) -> None:
         self.window = window
         window.events.closing += self.on_closing
         window.events.closed += self.closed.set
+        shown = getattr(window.events, "shown", None)
+        if shown is not None:
+            shown += self._on_shown
+
+    def _on_shown(self) -> None:
+        self.window_shown = True
 
     def close_blocker(self) -> str | None:
         """Why the window must stay open now, or None when closing is safe.
@@ -310,7 +343,7 @@ def use_browser(args: argparse.Namespace, runtime_check: Callable[[], str | None
 
 def run_browser(args: argparse.Namespace, backend: Any,
                 open_url: Callable[[str], bool] | None = None,
-                poll: float = 1.0) -> int:
+                poll: float = 1.0, already_started: bool = False) -> int:
     """Serve the dashboard to the default browser until Quit or every tab is gone."""
     controller = AppController(backend)
     lifecycle = BrowserLifecycle(controller.close_blocker)
@@ -333,8 +366,9 @@ def run_browser(args: argparse.Namespace, backend: Any,
             except (OSError, ValueError):
                 pass
     try:
-        backend.start_in_thread()
-        wait_for_backend(backend.port, backend.instance_token)
+        if not already_started:
+            backend.start_in_thread()
+            wait_for_backend(backend.port, backend.instance_token)
         print(f"Serial Deck dashboard: {backend.url}", flush=True)
         opened = (open_url or runtime.open_browser)(backend.url)
         if not opened:
@@ -407,8 +441,31 @@ def run_app(args: argparse.Namespace,
         controller.attach(window)
         previous_signals = install_signal_handlers(controller)
         print(f"Serial Deck App backend: {backend.url}", flush=True)
+        if getattr(args, "smoke_test", False):
+            def probe() -> None:
+                # The page is live in the native window once JS can read its title.
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline:
+                    try:
+                        if window.evaluate_js("document.title") == APP_TITLE:
+                            print("SMOKE WINDOW OK", flush=True)
+                            controller.smoke_ok = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                window.destroy()
+            webview_module.start(probe, debug=args.debug)
+            return 0 if getattr(controller, "smoke_ok", False) else 4
         webview_module.start(debug=args.debug)
     except Exception as exc:
+        if runtime.frozen() and not controller.window_shown:
+            # The native window never came up (e.g. a broken WebView runtime):
+            # keep this dashboard and hand it to the browser instead of failing.
+            print(f"The app window could not open ({exc}); using your browser.", file=sys.stderr, flush=True)
+            restore_signal_handlers(previous_signals)
+            previous_signals = {}
+            return run_browser(args, backend, already_started=True)
         print(f"Serial Deck App failed: {exc}", file=sys.stderr)
         return 1
     finally:

@@ -43,6 +43,15 @@ if IS_WIN:
             pass
 datas.append((str(ROOT / "serial_deck" / "web_assets"), "serial_deck/web_assets"))
 
+# Tk's shared libraries: python.org/uv builds keep them next to libpython,
+# where PyInstaller's binary dependency scan does not look for _tkinter.
+if not IS_WIN:
+    import sysconfig
+    libdir = Path(sysconfig.get_config_var("LIBDIR") or "")
+    for pattern in ("libtcl*.so*", "libtk*.so*", "libtcl*.dylib", "libtk*.dylib"):
+        for lib in libdir.glob(pattern):
+            binaries.append((str(lib), "."))
+
 analysis = Analysis(
     [str(ROOT / "serial_deck" / "launcher.py")],
     pathex=[str(ROOT)],
@@ -79,6 +88,10 @@ if IS_MAC:
             "CFBundleVersion": __version__,
             "LSMinimumSystemVersion": os.environ.get("MACOSX_DEPLOYMENT_TARGET", "12.0"),
             "NSHighResolutionCapable": True,
+            # The console EXE is collected last; without this PyInstaller marks
+            # the whole app background-only (no Dock icon, no menu bar).
+            "LSBackgroundOnly": False,
+            "LSUIElement": False,
             "LSApplicationCategoryType": "public.app-category.developer-tools",
         },
     )

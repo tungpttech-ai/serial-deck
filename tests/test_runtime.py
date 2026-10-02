@@ -44,6 +44,12 @@ class FrozenSelfCommandTest(unittest.TestCase):
             os.environ["APPIMAGE_EXTRACT_AND_RUN"] = "1"
             self.assertEqual(runtime.self_command("mcp"),
                              ["/home/u/SerialDeck.AppImage", "--appimage-extract-and-run", "mcp"])
+            # The flag form is stripped by the runtime; the extraction dir still tells.
+            os.environ.pop("APPIMAGE_EXTRACT_AND_RUN")
+            os.environ["APPDIR"] = "/tmp/appimage_extracted_0123abcd"
+            self.assertIn("--appimage-extract-and-run", runtime.self_command("hub"))
+            os.environ["APPDIR"] = "/tmp/.mount_SerialXy"
+            self.assertNotIn("--appimage-extract-and-run", runtime.self_command("hub"))
 
     def test_host_env_restores_the_loader_path(self):
         env = {"LD_LIBRARY_PATH": "/bundle/_internal", "LD_LIBRARY_PATH_ORIG": "/usr/local/lib",

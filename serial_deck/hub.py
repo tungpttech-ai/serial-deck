@@ -16,13 +16,14 @@ import time
 from pathlib import Path
 
 try:
-    from . import ipc
+    from . import ipc, runtime
     from .flash import build_flash_command, flash_build_in_process
     from .uart_client import (
         MAX_ENCODED_FRAME, NetworkTransport, SerialTransport, discover_serial_ports,
         is_device_port, is_network_port, open_device_transport, port_identity)
 except ImportError:
     import ipc
+    import runtime
     from flash import build_flash_command, flash_build_in_process
     from uart_client import (
         MAX_ENCODED_FRAME, NetworkTransport, SerialTransport, discover_serial_ports,
@@ -339,7 +340,7 @@ class UartHub:
                     self.flash_id += 1
                     self.flash_progress = 0
                     self.flash_step = "Starting flash"
-                    self.flash_line = " ".join(command)
+                    self.flash_line = runtime.shell_command(command)
                     self.flash_build_dir = str(Path(build_dir).expanduser().resolve())
                     self.flash_baud = flash_baud
                     self.flash_exit_code = None
@@ -610,6 +611,15 @@ class UartHub:
 EXIT_OK, EXIT_NOT_RUNNING, EXIT_REFUSED, EXIT_TIMEOUT = 0, 3, 4, 5
 
 
+def wait_pid_exit(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while ipc.pid_alive(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     ipc.configure_console_streams()
     parser = argparse.ArgumentParser(description="UART fan-out hub")
@@ -636,16 +646,34 @@ def main(argv: list[str] | None = None) -> int:
         if not args.shutdown:
             print(json.dumps(manager.get_status(), indent=2))
             return EXIT_OK
+        # Identify the process first: success means *that* process has exited,
+        # whatever happens to the reply or the endpoint files.
+        try:
+            known_pid = manager.get_status().get("pid")
+        except (OSError, RuntimeError, ValueError):
+            known_pid = None
+        known_pid = known_pid if type(known_pid) is int else None
         try:
             pid = manager.shutdown()
         except TimeoutError as exc:
             print(f"hub did not stop: {exc}", file=sys.stderr)
             return EXIT_TIMEOUT
         except (OSError, RuntimeError) as exc:
-            if not manager.socket_ready():
-                return EXIT_OK  # it went away while we asked
-            print(f"hub refused to stop: {exc}", file=sys.stderr)
-            return EXIT_REFUSED
+            if known_pid is None or manager.socket_ready() or ipc.pid_alive(known_pid):
+                # Refused, or the reply was lost and the hub may still be alive.
+                if known_pid is not None and not manager.socket_ready() and ipc.pid_alive(known_pid):
+                    if wait_pid_exit(known_pid, 15.0):
+                        print(f"hub stopped (pid {known_pid})")
+                        return EXIT_OK
+                    print(f"hub pid {known_pid} did not exit", file=sys.stderr)
+                    return EXIT_TIMEOUT
+                print(f"hub refused to stop: {exc}", file=sys.stderr)
+                return EXIT_REFUSED
+            pid = known_pid  # the reply was lost, but that process is gone
+        pid = pid or known_pid
+        if pid is not None and not wait_pid_exit(pid, 15.0):
+            print(f"hub pid {pid} did not exit", file=sys.stderr)
+            return EXIT_TIMEOUT
         print(f"hub stopped (pid {pid})" if pid else "hub stopped")
         return EXIT_OK
 

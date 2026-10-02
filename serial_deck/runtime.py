@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 CLI_NAME = "serial-deck-cli"
@@ -43,11 +44,24 @@ def self_command(*args: str) -> list[str]:
     if exe is None:
         raise RuntimeError("self_command() is only for frozen builds")
     command = [exe]
-    # A no-FUSE launch (`--appimage-extract-and-run`, or APPIMAGE_EXTRACT_AND_RUN=1)
-    # must use the same strategy for every relaunch, or the child cannot start.
-    if os.environ.get("APPIMAGE") and os.environ.get("APPIMAGE_EXTRACT_AND_RUN") == "1":
+    # A no-FUSE launch must relaunch the same way, or the child cannot start.
+    if appimage_extracted():
         command.append("--appimage-extract-and-run")
     return [*command, *args]
+
+
+def appimage_extracted() -> bool:
+    """True when this AppImage runs extracted (no FUSE), however that was requested.
+
+    The runtime strips `--appimage-extract-and-run` before AppRun sees it, so the
+    flag cannot be read back; the extraction directory name is what tells.
+    """
+    if not os.environ.get("APPIMAGE"):
+        return False
+    if os.environ.get("APPIMAGE_EXTRACT_AND_RUN") == "1":
+        return True
+    appdir = os.path.basename(os.environ.get("APPDIR", "").rstrip("/"))
+    return appdir.startswith("appimage_extracted_")
 
 
 def host_env() -> dict[str, str]:
@@ -72,31 +86,65 @@ def host_env() -> dict[str, str]:
     return env
 
 
-def host_popen_kwargs() -> dict[str, object]:
-    """Extra Popen arguments for host programs (see host_env)."""
-    kwargs: dict[str, object] = {"env": host_env()}
-    if frozen() and os.name == "nt":
-        # PyInstaller calls SetDllDirectoryW(<bundle>) for itself; a child that
-        # inherits it would load our DLLs. Reset it around host launches.
-        kwargs["_reset_dll_directory"] = True
-    return kwargs
+_SPAWN_LOCK = threading.Lock()
 
 
-def run_host(args: list[str], **kwargs):
-    """subprocess.run for a host program, with the bundle's loader state undone."""
+def shell_quote(arg: str) -> str:
+    """Quote one argument for the user's shell: PowerShell on Windows, else POSIX sh."""
+    if os.name == "nt":
+        if arg and all(c.isalnum() or c in "-_.:\\/=" for c in arg):
+            return arg
+        return "'" + arg.replace("'", "''") + "'"
+    import shlex
+    return shlex.quote(arg)
+
+
+def shell_command(parts: list[str]) -> str:
+    """A command line the user can paste; PowerShell needs `&` to call a quoted program."""
+    line = " ".join(shell_quote(part) for part in parts)
+    if os.name == "nt" and line.startswith("'"):
+        return "& " + line
+    return line
+
+
+def popen_host(args: list[str], **kwargs):
+    """subprocess.Popen for a *host* program, with the bundle's loader state undone.
+
+    Environment: host_env(). Windows bundles also call SetDllDirectoryW(<bundle>)
+    for themselves, and a child inherits that search path; it is cleared only
+    for the instant CreateProcess runs (serialized, restored right after), so
+    this process never runs without it.
+    """
     import subprocess
-    extra = host_popen_kwargs()
-    reset = extra.pop("_reset_dll_directory", False)
-    extra.update(kwargs)
-    if not reset:
-        return subprocess.run(args, **extra)
+    kwargs.setdefault("env", host_env())
+    if not (frozen() and os.name == "nt"):
+        return subprocess.Popen(args, **kwargs)
     import ctypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.SetDllDirectoryW(None)  # back to the default search order for children
+    bundle = str(Path(getattr(sys, "_MEIPASS", bundle_dir())))
+    with _SPAWN_LOCK:
+        kernel32.SetDllDirectoryW(None)
+        try:
+            return subprocess.Popen(args, **kwargs)
+        finally:
+            kernel32.SetDllDirectoryW(bundle)
+
+
+def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None, **kwargs):
+    """subprocess.run equivalent built on popen_host."""
+    import subprocess
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    if input is not None:
+        kwargs["stdin"] = subprocess.PIPE
+    process = popen_host(args, **kwargs)
     try:
-        return subprocess.run(args, **extra)
-    finally:
-        kernel32.SetDllDirectoryW(str(Path(getattr(sys, "_MEIPASS", bundle_dir()))))
+        stdout, stderr = process.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
 
 def open_browser(url: str) -> bool:
@@ -104,13 +152,16 @@ def open_browser(url: str) -> bool:
     if not frozen():
         import webbrowser
         return webbrowser.open(url)
-    if os.name == "nt":
-        os.startfile(url)  # ShellExecute: the shell launches the browser, not us
-        return True
     import subprocess
-    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    if os.name == "nt":
+        # rundll32 hands the URL to the user's default browser; it is started
+        # through popen_host, so it inherits neither our DLL path nor env.
+        opener = [str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "rundll32.exe"),
+                  "url.dll,FileProtocolHandler", url]
+    else:
+        opener = ["open" if sys.platform == "darwin" else "xdg-open", url]
     try:
-        result = run_host([opener, url], capture_output=True, timeout=15)
+        result = run_host(opener, capture_output=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0

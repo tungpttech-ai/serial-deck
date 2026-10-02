@@ -7,11 +7,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 
-# Each version lives in its own directory: an upgrade installs the new tree
-# beside the old one, so a per-user hub started from the old version keeps
-# its files until it exits (dpkg runs as root and cannot stop users' hubs).
-# The postinst prunes old trees that no running process uses.
-app="opt/serial-deck/$version"
+# dpkg replaces package files itself, so files a running Serial Deck still
+# uses cannot be preserved; preinst/prerm refuse while any process runs from
+# /opt/serial-deck (dpkg runs as root and does not stop users' hubs).
+app="opt/serial-deck"
 install -d -m 0755 "$root/DEBIAN" "$root/$app" "$root/usr/bin" \
     "$root/usr/share/applications" "$root/usr/share/doc/serial-deck"
 cp -a "$bundle/." "$root/$app/"
@@ -23,8 +22,8 @@ for size in 16 32 48 64 128 256 512; do
         "$root/usr/share/icons/hicolor/${size}x${size}/apps/serial-deck.png"
 done
 install -m 0644 "$here/../../LICENSE" "$root/usr/share/doc/serial-deck/copyright"
-install -m 0755 "$here/deb-postinst" "$root/DEBIAN/postinst"
-install -m 0755 "$here/deb-postrm" "$root/DEBIAN/postrm"
+install -m 0755 "$here/deb-preinst" "$root/DEBIAN/preinst"
+install -m 0755 "$here/deb-prerm" "$root/DEBIAN/prerm"
 
 # Modes: dirs 0755, executables and shared objects 0755, data 0644.
 find "$root/opt" -type d -exec chmod 0755 {} +
@@ -36,10 +35,13 @@ find "$root/opt" -type f \( -name '*.so' -o -name '*.so.*' \) -exec chmod 0755 {
 mkdir -p "$root/debian"
 printf 'Source: serial-deck\n\nPackage: serial-deck\nArchitecture: amd64\n' > "$root/debian/control"
 mapfile -t elves < <(find "$root/opt" -type f -exec sh -c 'head -c 4 "$1" | grep -q "ELF" && echo "$1"' _ {} \;)
-shlibs=$(cd "$root" && dpkg-shlibdeps -O --ignore-missing-info -l"$root/$app/_internal" \
-    -e "${elves[@]}" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
+# Libraries inside the bundle resolve to themselves (-l); anything else must map
+# to a Debian package, or the build fails rather than shipping a guess.
+shlibs=$(cd "$root" && dpkg-shlibdeps -O -l"$root/$app/_internal" -e "${elves[@]}" \
+    | sed -n 's/^shlibs:Depends=//p')
+[ -n "$shlibs" ] || { echo "dpkg-shlibdeps found no dependencies" >&2; exit 1; }
 rm -rf "$root/debian"
-depends="${shlibs:-libc6 (>= 2.35)}, xdg-utils"
+depends="$shlibs, xdg-utils"
 
 size=$(du -sk "$root/opt" | cut -f1)
 cat > "$root/DEBIAN/control" <<CONTROL
@@ -49,7 +51,6 @@ Architecture: amd64
 Maintainer: Serial Deck contributors <noreply@github.com>
 Installed-Size: $size
 Depends: $depends
-Recommends: python3-tk
 Section: electronics
 Priority: optional
 Homepage: https://github.com/tungpttech-ai/serial-deck

@@ -25,13 +25,13 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  PYINSTALLER_VERSION: "6.22.3"
 
 jobs:
   prepare:
     runs-on: ubuntu-24.04
     outputs:
       ref: ${{ steps.ref.outputs.ref }}
+      tag: ${{ steps.ref.outputs.tag }}
       version: ${{ steps.ref.outputs.version }}
       publish: ${{ steps.ref.outputs.publish }}
     steps:
@@ -47,24 +47,29 @@ jobs:
         run: |
           set -euo pipefail
           publish=false
+          tag=""
           case "$EVENT" in
-            pull_request) ref="$GITHUB_SHA" ;;
-            push) ref="$REF_NAME"; publish=true ;;
-            workflow_dispatch)
-              if ! [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "tag must look like v1.2.3" >&2; exit 1
+            pull_request) sha="$GITHUB_SHA" ;;
+            push|workflow_dispatch)
+              tag=$([ "$EVENT" = push ] && echo "$REF_NAME" || echo "$INPUT_TAG")
+              # The same checks for a pushed tag and a manual run.
+              if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "tag must look like v1.2.3, got '$tag'" >&2; exit 1
               fi
-              git rev-parse -q --verify "refs/tags/$INPUT_TAG" >/dev/null || { echo "no such tag" >&2; exit 1; }
-              git merge-base --is-ancestor "$INPUT_TAG" origin/main || { echo "tag not on main" >&2; exit 1; }
-              ref="$INPUT_TAG"; publish=true ;;
+              git fetch -q origin "refs/tags/$tag:refs/tags/$tag" main
+              sha=$(git rev-parse -q --verify "refs/tags/$tag^{commit}") || { echo "no such tag" >&2; exit 1; }
+              git merge-base --is-ancestor "$sha" origin/main || { echo "tag is not on main" >&2; exit 1; }
+              publish=true ;;
           esac
           [ "$REPO" = "tungpttech-ai/serial-deck" ] || publish=false
-          git checkout -q "$ref"
+          git checkout -q "$sha"
           version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('serial_deck/__init__.py').read()).group(1))")
-          if [ "$publish" = true ] && [ "${ref#v}" != "$version" ]; then
-            echo "tag $ref does not match serial_deck.__version__ $version" >&2; exit 1
+          if [ "$publish" = true ] && [ "${tag#v}" != "$version" ]; then
+            echo "tag $tag does not match serial_deck.__version__ $version" >&2; exit 1
           fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          # Every later job checks out this exact commit, never a movable ref.
+          echo "ref=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
@@ -100,10 +105,20 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install build dependencies
+      - name: Install build dependencies (hash-locked), then this checkout without deps
+        shell: bash
         run: |
-          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}" pythonnet
-          python -m pip install ".[app,mcp]"
+          lock=packaging/requirements/windows-x86_64.txt
+          if [ ! -f "$lock" ]; then
+            [ "${{ needs.prepare.outputs.publish }}" != true ] || { echo "release builds need $lock" >&2; exit 1; }
+            echo "::warning::$lock is missing; generating it here (run the Lock workflow and commit it)"
+            python -m pip install "pip-tools==7.6.1"
+            python -m piptools compile --quiet --generate-hashes --allow-unsafe --strip-extras \
+              --pip-args "--only-binary cryptography,cffi,pydantic-core,pythonnet,clr-loader" \
+              --output-file "$lock" packaging/requirements/build.in
+          fi
+          python -m pip install --require-hashes -r "$lock"
+          python -m pip install --no-deps --no-build-isolation .
       - name: Freeze
         run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
       - name: Prepare signing certificate
@@ -122,59 +137,93 @@ jobs:
         if: steps.cert.outputs.enabled == 'true'
         shell: pwsh
         env:
-          CERT_PATH: ${{ steps.cert.outputs.path }}
-          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          SIGN_CERT_PATH: ${{ steps.cert.outputs.path }}
+          SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
-          & $signtool.FullName sign /f $env:CERT_PATH /p $env:CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\serial-deck\serial-deck.exe dist\serial-deck\serial-deck-cli.exe
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+          foreach ($exe in "dist\serial-deck\serial-deck.exe", "dist\serial-deck\serial-deck-cli.exe") {
+            & powershell -NoProfile -File packaging\windows\sign.ps1 $exe
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
       - name: Smoke test the bundle
         run: python packaging/smoke_test.py dist/serial-deck/serial-deck-cli.exe --gui dist/serial-deck/serial-deck.exe
       - name: Portable zip
         shell: pwsh
         run: Compress-Archive -Path dist\serial-deck -DestinationPath "dist\SerialDeck-${{ needs.prepare.outputs.version }}-win-x64.zip"
-      - name: Installer
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress | Out-Null }
+      - name: Installer (unsigned)
+        if: steps.cert.outputs.enabled != 'true'
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ needs.prepare.outputs.version }}" "packaging\windows\serial-deck.iss"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Installer (signed, release only)
+        if: steps.cert.outputs.enabled == 'true'
         shell: pwsh
         env:
-          CERT_PATH: ${{ steps.cert.outputs.path }}
-          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-          SIGNED: ${{ steps.cert.outputs.enabled }}
+          SIGN_CERT_PATH: ${{ steps.cert.outputs.path }}
+          SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
-          $args = @("/DAppVersion=${{ needs.prepare.outputs.version }}", "packaging\windows\serial-deck.iss")
-          if ($env:SIGNED -eq 'true') {
-            $args = @("/DSign=1", "/Ssigntool=`"$env:SIGNTOOL`" sign /f `$q$env:CERT_PATH`$q /p `$q$env:CERT_PASSWORD`$q /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f") + $args
-          }
-          & $iscc @args
+          # ISCC signs the uninstaller while compiling; sign.ps1 reads the password
+          # from this step's environment, never from the command line.
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DSign=1" "/Ssigntool=powershell -NoProfile -File $PWD\packaging\windows\sign.ps1 `$f" "/DAppVersion=${{ needs.prepare.outputs.version }}" "packaging\windows\serial-deck.iss"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem dist\installer\SerialDeck-*-Setup.exe | ForEach-Object {
+            & powershell -NoProfile -File packaging\windows\sign.ps1 $_.FullName
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
       - name: Installer lifecycle test
         shell: pwsh
         run: |
-          $setup = Get-ChildItem dist\installer\SerialDeck-*-Setup.exe | Select-Object -First 1
-          Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/CURRENTUSER","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $ErrorActionPreference = "Stop"
+          $setup = (Get-ChildItem dist\installer\SerialDeck-*-Setup.exe | Select-Object -First 1).FullName
           $app = Join-Path $env:LOCALAPPDATA "Programs\Serial Deck"
-          if (-not (Test-Path "$app\serial-deck-cli.exe")) { throw "not installed" }
-          python packaging/smoke_test.py "$app\serial-deck-cli.exe"
-          # Upgrade over an idle running hub must succeed (setup stops it first).
-          & "$app\serial-deck-cli.exe" web --port-web 18777 &
-          Start-Sleep 5
-          Get-Job | Stop-Job; Get-Job | Remove-Job
-          Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/CURRENTUSER","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-          Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait
+          $cli = Join-Path $app "serial-deck-cli.exe"
+          $runtime = Join-Path $env:RUNNER_TEMP "sd-installer-rt"
+          $env:SERIAL_DECK_RUNTIME_DIR = $runtime
+          function Install-Silently {
+            $p = Start-Process $setup -ArgumentList "/VERYSILENT","/CURRENTUSER","/SUPPRESSMSGBOXES","/NORESTART","/LOG=$env:RUNNER_TEMP\setup.log" -Wait -PassThru
+            return $p.ExitCode
+          }
+          # 1. First install (no previous CLI, no hub).
+          if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "first install failed" }
+          if (-not (Test-Path $cli)) { throw "not installed" }
+          python packaging/smoke_test.py $cli
+          # 2. Upgrade while a dashboard holds a hub client: setup must refuse and change nothing.
+          $client = Start-Process python -ArgumentList "packaging\hold_client.py",$cli -PassThru -NoNewWindow
+          Start-Sleep 8
+          $before = (Get-Item $cli).LastWriteTimeUtc
+          if ((Install-Silently) -eq 0) { throw "upgrade succeeded while the hub had a client" }
+          if ((Get-Item $cli).LastWriteTimeUtc -ne $before) { throw "files changed despite refusal" }
+          Stop-Process -Id $client.Id -Force
           Start-Sleep 3
-          if (Test-Path "$app\serial-deck.exe") { throw "uninstall left files" }
+          # 3. Upgrade with an idle hub running: setup stops it and succeeds.
+          & $cli hub --status | Out-Null
+          if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "idle upgrade failed" }
+          & $cli hub --status 2>$null; if ($LASTEXITCODE -ne 3) { throw "hub still running after upgrade" }
+          # 4. Uninstall removes everything it installed.
+          $p = Start-Process (Join-Path $app "unins000.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed ($($p.ExitCode))" }
+          for ($i = 0; $i -lt 20 -and (Test-Path (Join-Path $app "serial-deck.exe")); $i++) { Start-Sleep 1 }
+          if (Test-Path (Join-Path $app "serial-deck.exe")) { throw "uninstall left files" }
       - name: Remove certificate
-        if: always() && steps.cert.outputs.path
+        if: always()
         shell: pwsh
-        run: Remove-Item -Force "${{ steps.cert.outputs.path }}" -ErrorAction SilentlyContinue
+        run: Remove-Item -Force (Join-Path $env:RUNNER_TEMP "cert.pfx") -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: |
             dist/installer/*.exe
             dist/*.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lock-windows-x86_64
+          path: packaging/requirements/windows-x86_64.txt
+          if-no-files-found: ignore
 
   macos:
     needs: prepare
@@ -197,10 +246,19 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install build dependencies
+      - name: Install build dependencies (hash-locked), then this checkout without deps
         run: |
-          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
-          python -m pip install ".[app,mcp]" pyobjc-framework-Cocoa pyobjc-framework-WebKit pyobjc-framework-Quartz pyobjc-framework-Security pyobjc-framework-UniformTypeIdentifiers
+          lock="packaging/requirements/macos-${{ matrix.arch }}.txt"
+          if [ ! -f "$lock" ]; then
+            [ "${{ needs.prepare.outputs.publish }}" != true ] || { echo "release builds need $lock" >&2; exit 1; }
+            echo "::warning::$lock is missing; generating it here (run the Lock workflow and commit it)"
+            python -m pip install "pip-tools==7.6.1"
+            python -m piptools compile --quiet --generate-hashes --allow-unsafe --strip-extras \
+              --pip-args "--only-binary cryptography,cffi,pydantic-core,pyobjc-core" \
+              --output-file "$lock" packaging/requirements/build.in
+          fi
+          python -m pip install --require-hashes -r "$lock"
+          python -m pip install --no-deps --no-build-isolation .
       - name: Icon
         run: |
           set -euo pipefail
@@ -219,8 +277,10 @@ jobs:
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
           set -euo pipefail
-          if [ -z "${CERT_P12:-}" ]; then echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           keychain=$RUNNER_TEMP/signing.keychain-db
+          # Record cleanup paths before creating anything, so cleanup always runs.
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+          if [ -z "${CERT_P12:-}" ]; then echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           kc_pass=$(openssl rand -hex 24)
           printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p "$kc_pass" "$keychain"
@@ -231,7 +291,6 @@ jobs:
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm -f "$RUNNER_TEMP/cert.p12"
           echo "enabled=true" >> "$GITHUB_OUTPUT"
-          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
           echo "SERIAL_DECK_CODESIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
           echo "SERIAL_DECK_ENTITLEMENTS=$PWD/packaging/macos/entitlements.plist" >> "$GITHUB_ENV"
       - name: Freeze
@@ -300,13 +359,21 @@ jobs:
           xcrun stapler staple "$DMG"
           xcrun stapler validate "$DMG"
           spctl --assess --type open --context context:primary-signature --verbose "$DMG"
-      - name: Remove keychain
-        if: always() && steps.cert.outputs.keychain
-        run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
+      - name: Remove keychain and certificate
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/cert.p12"
+          [ -e "$RUNNER_TEMP/signing.keychain-db" ] && security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
           path: dist/*.dmg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lock-macos-${{ matrix.arch }}
+          path: packaging/requirements/macos-${{ matrix.arch }}.txt
+          if-no-files-found: ignore
 
   linux:
     needs: prepare
@@ -322,13 +389,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq dpkg-dev fakeroot desktop-file-utils
-          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
-          python -m pip install ".[mcp]"
+          sudo apt-get install -y -qq dpkg-dev fakeroot desktop-file-utils xvfb xauth
+          python -m pip install --require-hashes -r packaging/requirements/linux-x86_64.txt
+          python -m pip install --no-deps --no-build-isolation .
       - name: Freeze
         run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
-      - name: Smoke test the bundle
-        run: python packaging/smoke_test.py dist/serial-deck/serial-deck-cli
+      - name: Smoke test the bundle (with a Tk window under Xvfb)
+        run: xvfb-run -a python packaging/smoke_test.py dist/serial-deck/serial-deck-cli --window
       - name: AppImage
         run: |
           set -euo pipefail
@@ -345,13 +412,17 @@ jobs:
           install -m 0644 packaging/icons/serial-deck-256.png "$appdir/serial-deck.png"
           desktop-file-validate "$appdir/serial-deck.desktop"
           ARCH=x86_64 "$RUNNER_TEMP/appimagetool" --appimage-extract-and-run "$appdir" "dist/SerialDeck-$version-x86_64.AppImage"
-      - name: AppImage smoke test (extract-and-run, no FUSE)
+      - name: AppImage smoke tests (FUSE, and both no-FUSE forms)
         run: |
           set -euo pipefail
-          img=$(ls dist/*.AppImage)
+          img=$(readlink -f dist/*.AppImage)
           chmod +x "$img"
-          export APPIMAGE_EXTRACT_AND_RUN=1
-          python packaging/smoke_test.py "$img"
+          if [ -e /dev/fuse ]; then python packaging/smoke_test.py "$img"; fi
+          APPIMAGE_EXTRACT_AND_RUN=1 python packaging/smoke_test.py "$img"
+          # The flag form: the runtime strips it, the app must still relaunch extracted.
+          printf '#!/bin/sh\nexec "%s" --appimage-extract-and-run "$@"\n' "$img" > "$RUNNER_TEMP/sd-flagged"
+          chmod +x "$RUNNER_TEMP/sd-flagged"
+          python packaging/smoke_test.py "$RUNNER_TEMP/sd-flagged"
       - name: Debian package
         run: packaging/linux/build-deb.sh dist/serial-deck "${{ needs.prepare.outputs.version }}" dist
       - name: Debian package install/upgrade/remove in clean containers
@@ -361,11 +432,18 @@ jobs:
           for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
             echo "::group::$image"
             docker run --rm -v "$PWD:/w" -w /w "$image" sh -ec "
-              apt-get update -qq && apt-get install -y -qq python3 >/dev/null
+              apt-get update -qq && apt-get install -y -qq python3 xvfb xauth >/dev/null
               apt-get install -y -qq ./$deb >/dev/null
               test -x /usr/bin/serial-deck-cli
-              python3 packaging/smoke_test.py /usr/bin/serial-deck-cli
-              apt-get install -y -qq --reinstall ./$deb >/dev/null
+              xvfb-run -a python3 packaging/smoke_test.py /usr/bin/serial-deck-cli --window
+              # A running hub must make upgrade and removal refuse, files untouched.
+              SERIAL_DECK_RUNTIME_DIR=/tmp/held serial-deck-cli hub --socket /tmp/held/hub.sock >/dev/null 2>&1 &
+              sleep 3
+              if dpkg -i ./$deb; then echo 'upgrade must refuse while running'; exit 1; fi
+              test -x /opt/serial-deck/serial-deck-cli
+              if apt-get remove -y -qq serial-deck; then echo 'remove must refuse while running'; exit 1; fi
+              SERIAL_DECK_RUNTIME_DIR=/tmp/held serial-deck-cli hub --socket /tmp/held/hub.sock --shutdown
+              dpkg -i ./$deb >/dev/null
               apt-get remove -y -qq serial-deck >/dev/null
               test ! -e /usr/bin/serial-deck-cli
               test ! -d /opt/serial-deck
@@ -401,8 +479,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: true
+          path: downloads
+      - name: Collect release files (not the lock files)
+        run: |
+          mkdir artifacts
+          for dir in downloads/*/; do
+            case "$(basename "$dir")" in lock-*) continue ;; esac
+            cp "$dir"* artifacts/
+          done
+          ls -la artifacts
       - name: Checksums
         run: |
           cd artifacts
@@ -411,7 +496,7 @@ jobs:
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.ref }}
+          TAG: ${{ needs.prepare.outputs.tag }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

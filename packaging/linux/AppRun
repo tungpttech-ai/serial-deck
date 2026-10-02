@@ -1,10 +1,6 @@
 #!/bin/sh
-# AppImage entry: run the bundled GUI launcher with all arguments.
-# APPIMAGE / APPDIR are set by the AppImage runtime. A no-FUSE launch
-# (--appimage-extract-and-run) also exports APPIMAGE_EXTRACT_AND_RUN=1 so the
-# app relaunches its hub and MCP server the same way.
+# AppImage entry: run the bundled launcher with all arguments.
+# APPIMAGE / APPDIR are set by the AppImage runtime; the app reads them to
+# relaunch its hub and MCP server through the AppImage, in the same mode.
 HERE="$(dirname "$(readlink -f "$0")")"
-for arg in "$@"; do
-    [ "$arg" = "--appimage-extract-and-run" ] && export APPIMAGE_EXTRACT_AND_RUN=1
-done
 exec "$HERE/usr/lib/serial-deck/serial-deck" "$@"

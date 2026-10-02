@@ -1012,7 +1012,7 @@ class ControlDeck:
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
             messagebox.showerror("Flash setup", str(exc))
             return
-        command_text = " ".join(command)
+        command_text = runtime.shell_command(command)
         if not messagebox.askyesno(
                 "Confirm Flash",
                 f"This will write the build to {port}.\n\n{command_text}\n\nContinue?"):
