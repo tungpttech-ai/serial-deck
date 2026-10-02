@@ -32,8 +32,10 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 LicenseFile=..\..\LICENSE
-; Running app windows are found by the restart manager; the hub is handled in [Code].
-CloseApplications=yes
+; [Code] stops the idle hub and refuses while anything runs from {app}; the
+; restart manager would instead try to close those programs (and can wait for
+; an answer that never comes in silent mode), so it stays off.
+CloseApplications=no
 RestartApplications=no
 ChangesEnvironment=yes
 #ifdef Sign
@@ -138,12 +140,15 @@ begin
   Result := True;
   if not FileExists(CliPath) then
     exit;
+  Log('Stopping the Serial Deck hub: ' + CliPath + ' hub --shutdown');
+  // `hub --shutdown` waits at most ~15 s for the hub process to exit.
   if not Exec(CliPath, 'hub --shutdown', '', SW_HIDE, ewWaitUntilTerminated, Code) then
   begin
     Message := 'Could not run ' + CliPath + ' to stop the Serial Deck hub.';
     Result := False;
     exit;
   end;
+  Log('hub --shutdown exit code: ' + IntToStr(Code));
   case Code of
     0, HubNotRunning: Result := True;
     HubRefused:
@@ -195,7 +200,7 @@ var
 begin
   Result := ReadyToChange(ExpandConstant('{app}'), Message);
   if not Result then
-    MsgBox(Message, mbError, MB_OK);
+    SuppressibleMsgBox(Message, mbError, MB_OK, IDOK);
 end;
 
 // Remove exactly the PATH entry this installer added: whole ';'-separated

@@ -52,6 +52,10 @@ if not IS_WIN:
         for lib in libdir.glob(pattern):
             binaries.append((str(lib), "."))
 
+# glibc/libgcc belong to the target system: a copy from the build host can need
+# a newer glibc than the oldest supported distro (the .deb declares libgcc-s1).
+SYSTEM_LIBS = ("libgcc_s.so", "libstdc++.so", "libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so")
+
 analysis = Analysis(
     [str(ROOT / "serial_deck" / "launcher.py")],
     pathex=[str(ROOT)],
@@ -61,6 +65,9 @@ analysis = Analysis(
     excludes=["tests", "pytest", "IPython", "matplotlib", "numpy"],
     noarchive=False,
 )
+if not IS_WIN and not IS_MAC:
+    analysis.binaries = [b for b in analysis.binaries
+                         if not Path(b[0]).name.startswith(SYSTEM_LIBS)]
 pyz = PYZ(analysis.pure)
 
 icon = str(ICONS / ("serial-deck.ico" if IS_WIN else "serial-deck.icns" if IS_MAC else "serial-deck.png"))
@@ -86,7 +93,7 @@ if IS_MAC:
             "CFBundleDisplayName": "Serial Deck",
             "CFBundleShortVersionString": __version__,
             "CFBundleVersion": __version__,
-            "LSMinimumSystemVersion": os.environ.get("MACOSX_DEPLOYMENT_TARGET", "12.0"),
+            "LSMinimumSystemVersion": os.environ.get("MACOSX_DEPLOYMENT_TARGET", "15.0"),
             "NSHighResolutionCapable": True,
             # The console EXE is collected last; without this PyInstaller marks
             # the whole app background-only (no Dock icon, no menu bar).

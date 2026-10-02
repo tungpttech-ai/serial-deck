@@ -6,8 +6,8 @@ pyserial>=3.5
 esptool>=5.0,<6
 pywebview>=5.0,<7
 mcp>=2.2,<3
-# cryptography 49+ ships no Intel macOS wheel; a source build there links a
-# libcrypto that needs the build host macOS. 48.0.1 has universal2 wheels.
+# cryptography 49+ ships no Intel macOS wheel, so pip builds it from source
+# there; 48.0.1 has universal2 wheels and keeps the Intel build reproducible.
 cryptography==48.0.1
 pythonnet; sys_platform == "win32"
 pyobjc-framework-Cocoa; sys_platform == "darwin"
