@@ -671,10 +671,15 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_REFUSED
             pid = known_pid  # the reply was lost, but that process is gone
         pid = pid or known_pid
-        if pid is not None and not wait_pid_exit(pid, 15.0):
+        if pid is None:
+            # A hub that never reported its pid (legacy): only a vanished endpoint
+            # is observable, which does not prove the process exited.
+            print("hub acknowledged shutdown but reported no pid; exit not verified", file=sys.stderr)
+            return EXIT_TIMEOUT
+        if not wait_pid_exit(pid, 15.0):
             print(f"hub pid {pid} did not exit", file=sys.stderr)
             return EXIT_TIMEOUT
-        print(f"hub stopped (pid {pid})" if pid else "hub stopped")
+        print(f"hub stopped (pid {pid})")
         return EXIT_OK
 
     # Clean shutdown (sockets unlinked, UART closed) on kill / terminal hang-up,

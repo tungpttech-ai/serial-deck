@@ -25,7 +25,7 @@ DEADLINE = 60.0
 
 def clean_env(runtime: Path, work: Path) -> dict[str, str]:
     keep = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
-            "USERNAME", "USERDOMAIN", "LANG", "DISPLAY", "XDG_RUNTIME_DIR", "COMSPEC",
+            "USERNAME", "USERDOMAIN", "LANG", "DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "COMSPEC",
             "APPIMAGE_EXTRACT_AND_RUN")
     env = {k: v for k, v in os.environ.items() if k in keep}
     # A PATH holding only an empty directory plus the OS's own tools; any
@@ -102,24 +102,86 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
+def browser_mode_test(gui: str, env: dict[str, str], work: Path) -> None:
+    """`app --browser` (the Linux default and the no-WebView2 fallback): it must
+    hand the URL to the system opener, keep serving, and stop on Quit."""
+    opened = work / "opened-url.txt"
+    fake = work / "opener"
+    fake.mkdir(exist_ok=True)
+    browser_env = dict(env)
+    if os.name == "nt":
+        # rundll32 cannot be faked; read the URL from the app's own output instead.
+        opener_log = None
+    else:
+        name = "open" if sys.platform == "darwin" else "xdg-open"
+        script = fake / name
+        script.write_text(f"#!/bin/sh\necho \"$1\" > '{opened}'\n")
+        script.chmod(0o755)
+        browser_env["PATH"] = os.pathsep.join([str(fake), env["PATH"]])
+        opener_log = opened
+    log = work / "browser-app.log"
+    with log.open("w", encoding="utf-8") as out:
+        process = subprocess.Popen([gui, "app", "--browser"], env=browser_env, cwd=CWD,
+                                   stdout=out, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + DEADLINE
+        url = ""
+        while not url:
+            if time.monotonic() > deadline:
+                raise SystemExit(f"FAILED: browser mode never opened a URL: {log.read_text()[-600:]}")
+            if opener_log is not None and opener_log.exists():
+                url = opener_log.read_text().strip()
+            else:
+                for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.startswith("Serial Deck dashboard: "):
+                        url = line.split(": ", 1)[1].strip()
+            time.sleep(0.25)
+        base = url.rstrip("/")
+        info = json.loads(wait_url(f"{base}/api/instance"))
+        assert info.get("browser_mode") is True, info
+        host = base.split("://", 1)[1]
+        request = urllib.request.Request(f"{base}/api/quit", data=b"{}", method="POST", headers={
+            "Content-Type": "application/json", "Host": host, "Origin": base})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert json.loads(response.read()).get("ok") is True
+        process.wait(timeout=30)
+        print(f"browser mode: opened {url}, Quit stopped it (exit {process.returncode})")
+    finally:
+        if process.poll() is None:
+            stop_group(process)
+
+
 def mcp_tools(argv: list[str], env: dict[str, str]) -> list[dict]:
     """Talk to an MCP stdio server like a client does: wait for each reply."""
+    import queue
+    import threading
     process = subprocess.Popen(argv, env=env, cwd=CWD, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    lines: queue.Queue = queue.Queue()
+    errors: list[str] = []
+    threading.Thread(target=lambda: [lines.put(l) for l in process.stdout] + [lines.put(None)],
+                     daemon=True).start()
+    threading.Thread(target=lambda: errors.extend(process.stderr), daemon=True).start()
+
     def send(message: dict) -> None:
         process.stdin.write(json.dumps(message) + "\n")
         process.stdin.flush()
 
     def reply(request_id: int) -> dict:
         deadline = time.monotonic() + DEADLINE
-        while time.monotonic() < deadline:
-            line = process.stdout.readline()
-            if not line:
-                raise SystemExit(f"FAILED: MCP server exited: {process.stderr.read()[-800:]}")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SystemExit(f"FAILED: MCP server did not answer: {''.join(errors)[-800:]}")
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if line is None:
+                raise SystemExit(f"FAILED: MCP server exited: {''.join(errors)[-800:]}")
             message = json.loads(line)  # every stdout line must be JSON-RPC
             if message.get("id") == request_id:
                 return message
-        raise SystemExit("FAILED: MCP server did not answer")
 
     try:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
@@ -166,6 +228,8 @@ def main() -> int:
     args = parser.parse_args()
     global CWD
     cli = str(Path(args.cli).resolve())
+    if args.gui:
+        args.gui = str(Path(args.gui).resolve())  # children run in a scratch cwd
     work = Path(tempfile.mkdtemp(prefix="sd-smoke-"))
     CWD = work  # never the checkout: the bundle must not read sources from cwd
     runtime = work / "rt"
@@ -223,11 +287,15 @@ def main() -> int:
                 f"Tk desktop window failed: {tk.stdout[-300:]} {tk.stderr[-600:]}"
             print(tk.stdout.strip().splitlines()[-1])
 
+        browser_mode_test(args.gui or cli, env, work)
+
         if args.gui:
             gui = run(args.gui, env, "app", "--check-runtime", check=False)
             print(f"gui runtime: {gui.stdout.strip() or gui.stderr.strip()}")
             assert gui.returncode == 0, "the app's window runtime is not usable"
-            if args.window:
+            if sys.platform.startswith("linux"):
+                assert "browser mode" in gui.stdout, gui.stdout
+            if args.window and not sys.platform.startswith("linux"):
                 window = run(args.gui, env, "app", "--smoke-test", check=False, timeout=120)
                 assert window.returncode == 0 and "SMOKE WINDOW OK" in window.stdout, \
                     f"app window did not load the dashboard: {window.stdout[-400:]} {window.stderr[-400:]}"

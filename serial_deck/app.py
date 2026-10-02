@@ -485,6 +485,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Installed {install_desktop_entry()}")
         return 0
     if args.check_runtime:
+        if runtime.frozen() and sys.platform.startswith("linux"):
+            print("browser mode: this bundle opens the dashboard in your browser")
+            return 0
         error = check_webview_runtime()
         print(error or "pywebview runtime OK")
         return 3 if error else 0

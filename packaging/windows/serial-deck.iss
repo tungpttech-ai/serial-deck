@@ -54,11 +54,12 @@ Name: "{group}\Uninstall Serial Deck"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Serial Deck"; Filename: "{app}\serial-deck.exe"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
-  ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
-; Remember that this installer added the PATH entry, so uninstall removes only that.
+; The ownership marker is written first and both entries test the same decision,
+; taken once before either write, so uninstall removes only a PATH entry we added.
 Root: HKCU; Subkey: "Software\Serial Deck"; ValueType: dword; ValueName: "AddedToPath"; ValueData: 1; \
-  Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}')); Flags: uninsdeletekey
+  Tasks: addtopath; Check: WillAddPath; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
+  ValueData: "{olddata};{app}"; Tasks: addtopath; Check: WillAddPath
 
 [Run]
 Filename: "{app}\serial-deck.exe"; Description: "Launch Serial Deck"; Flags: nowait postinstall skipifsilent
@@ -69,6 +70,10 @@ const
   HubRefused = 4;
   HubTimeout = 5;
 
+var
+  AddPathDecided: Boolean;
+  AddPathDecision: Boolean;
+
 function NeedsAddPath(Dir: string): Boolean;
 var
   Paths: string;
@@ -78,8 +83,20 @@ begin
   Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Paths) + ';') = 0;
 end;
 
-{ Any process still running from the install directory: a Serial Deck window, a
-  hub on a custom socket, an MCP server. Files cannot be replaced under them. }
+function WillAddPath(): Boolean;
+begin
+  if not AddPathDecided then
+  begin
+    AddPathDecision := NeedsAddPath(ExpandConstant('{app}'));
+    AddPathDecided := True;
+  end;
+  Result := AddPathDecision;
+end;
+
+// Any process still running from the install directory (a Serial Deck window, a
+// hub on a custom socket, an MCP server): files cannot be replaced under them.
+// True when one runs (names listed) or when WMI cannot tell: not knowing must
+// refuse, never allow, replacing files under a running app.
 function RunningFromApp(const Dir: string; var Names: string): Boolean;
 var
   Locator, Service, Items, Item: Variant;
@@ -105,14 +122,15 @@ begin
       end;
     end;
   except
-    { WMI unavailable: fall back to the hub check alone. }
+    Result := True;
+    Names := #13#10 + '  (could not list running programs: ' + GetExceptionMessage + ')';
   end;
 end;
 
-{ Stop this user's shared hub before files are replaced or removed. The hub
-  refuses while dashboards are attached or a flash is running; then setup
-  stops instead of breaking it. No installed CLI (first install) or no running
-  hub means there is nothing to stop. }
+// Stop this user's shared hub before files are replaced or removed. The hub
+// refuses while dashboards are attached or a flash is running; then setup
+// stops instead of breaking it. No installed CLI (first install) or no running
+// hub means there is nothing to stop.
 function StopHub(const CliPath: string; var Message: string): Boolean;
 var
   Code: Integer;
@@ -147,7 +165,7 @@ begin
   end;
 end;
 
-{ Stop the idle default hub, then refuse if anything else still runs from {app}. }
+// Stop the idle default hub, then refuse if anything else still runs from the app dir.
 function ReadyToChange(const Dir: string; var Message: string): Boolean;
 var
   Names: string;
@@ -180,8 +198,8 @@ begin
     MsgBox(Message, mbError, MB_OK);
 end;
 
-{ Remove exactly the PATH entry this installer added: whole ';'-separated
-  entries equal to {app}, and only if we recorded adding it. }
+// Remove exactly the PATH entry this installer added: whole ';'-separated
+// entries equal to {app}, and only if we recorded adding it.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Paths, Dir, Entry, Kept: string;

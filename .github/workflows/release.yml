@@ -145,7 +145,7 @@ jobs:
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
       - name: Smoke test the bundle
-        run: python packaging/smoke_test.py dist/serial-deck/serial-deck-cli.exe --gui dist/serial-deck/serial-deck.exe
+        run: python packaging/smoke_test.py dist/serial-deck/serial-deck-cli.exe --gui dist/serial-deck/serial-deck.exe --window
       - name: Portable zip
         shell: pwsh
         run: Compress-Archive -Path dist\serial-deck -DestinationPath "dist\SerialDeck-${{ needs.prepare.outputs.version }}-win-x64.zip"
@@ -192,13 +192,29 @@ jobs:
           if (-not (Test-Path $cli)) { throw "not installed" }
           python packaging/smoke_test.py $cli
           # 2. Upgrade while a dashboard holds a hub client: setup must refuse and change nothing.
-          $client = Start-Process python -ArgumentList "packaging\hold_client.py",$cli -PassThru -NoNewWindow
-          Start-Sleep 8
+          $ready = Join-Path $env:RUNNER_TEMP "client-ready.txt"
+          Remove-Item $ready -ErrorAction SilentlyContinue
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Get-Command python).Source
+          $psi.ArgumentList.Add((Resolve-Path "packaging\hold_client.py").Path)
+          $psi.ArgumentList.Add($cli)        # ArgumentList keeps "Serial Deck" in one argument
+          $psi.ArgumentList.Add($ready)
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.Environment["SERIAL_DECK_RUNTIME_DIR"] = $runtime
+          $holder = [System.Diagnostics.Process]::Start($psi)
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $ready); $i++) { Start-Sleep 1 }
+          if (-not (Test-Path $ready)) { throw "the test client never attached" }
           $before = (Get-Item $cli).LastWriteTimeUtc
           if ((Install-Silently) -eq 0) { throw "upgrade succeeded while the hub had a client" }
           if ((Get-Item $cli).LastWriteTimeUtc -ne $before) { throw "files changed despite refusal" }
-          Stop-Process -Id $client.Id -Force
-          Start-Sleep 3
+          $holder.StandardInput.Close()     # the holder stops its monitor and exits
+          if (-not $holder.WaitForExit(30000)) { throw "test client did not exit" }
+          for ($i = 0; $i -lt 30; $i++) {
+            $s = & $cli hub --status 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+            if ($s -and $s.client_count -eq 0) { break }
+            Start-Sleep 1
+          }
           # 3. Upgrade with an idle hub running: setup stops it and succeeds.
           & $cli hub --status | Out-Null
           if ((Install-Silently) -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "idle upgrade failed" }
@@ -326,7 +342,7 @@ jobs:
       - name: Smoke test the bundle
         run: |
           python packaging/smoke_test.py "dist/Serial Deck.app/Contents/MacOS/serial-deck-cli" \
-            --gui "dist/Serial Deck.app/Contents/MacOS/serial-deck"
+            --gui "dist/Serial Deck.app/Contents/MacOS/serial-deck" --window
       - name: Disk image
         env:
           SIGNED: ${{ steps.cert.outputs.enabled }}
@@ -395,7 +411,7 @@ jobs:
       - name: Freeze
         run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
       - name: Smoke test the bundle (with a Tk window under Xvfb)
-        run: xvfb-run -a python packaging/smoke_test.py dist/serial-deck/serial-deck-cli --window
+        run: xvfb-run -a python packaging/smoke_test.py dist/serial-deck/serial-deck-cli --gui dist/serial-deck/serial-deck --window
       - name: AppImage
         run: |
           set -euo pipefail

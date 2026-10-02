@@ -120,14 +120,22 @@ def popen_host(args: list[str], **kwargs):
     if not (frozen() and os.name == "nt"):
         return subprocess.Popen(args, **kwargs)
     import ctypes
+    from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    bundle = str(Path(getattr(sys, "_MEIPASS", bundle_dir())))
+    kernel32.GetDllDirectoryW.argtypes = [wintypes.DWORD, wintypes.LPWSTR]
+    kernel32.GetDllDirectoryW.restype = wintypes.DWORD
+    kernel32.SetDllDirectoryW.argtypes = [wintypes.LPCWSTR]
     with _SPAWN_LOCK:
+        # Save the exact current value (whatever set it), clear it only for
+        # CreateProcess, then put back precisely that value.
+        size = kernel32.GetDllDirectoryW(0, None)
+        buffer = ctypes.create_unicode_buffer(max(size, 1))
+        previous = buffer.value if size and kernel32.GetDllDirectoryW(size, buffer) else None
         kernel32.SetDllDirectoryW(None)
         try:
             return subprocess.Popen(args, **kwargs)
         finally:
-            kernel32.SetDllDirectoryW(bundle)
+            kernel32.SetDllDirectoryW(previous)
 
 
 def run_host(args: list[str], timeout: float | None = None, input: str | bytes | None = None, **kwargs):
