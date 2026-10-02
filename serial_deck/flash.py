@@ -16,6 +16,11 @@ import re
 from pathlib import Path
 from typing import Callable
 
+try:
+    from . import runtime
+except ImportError:
+    import runtime
+
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -103,9 +108,16 @@ def esptool_launcher(build: Path | None = None) -> list[str]:
 
 
 def build_flash_command(port: str, build_dir: str, flash_baud: int = 3000000) -> list[str]:
-    """The esptool command line, for display and the subprocess flasher."""
+    """A runnable command line for this flash, for display (and pip installs' subprocess flasher).
+
+    A frozen bundle has no separate esptool: it flashes in-process, and the
+    command shown is this bundle's own `flash` subcommand, which really works.
+    """
     build = Path(build_dir).expanduser().resolve()
     args = esptool_args(port, build_dir, flash_baud)  # validates the build first
+    if runtime.frozen():
+        return runtime.self_command("flash", "--port", port, "--build-dir", str(build),
+                                    "--baud", str(flash_baud), "--yes")
     return [*esptool_launcher(build), *args]
 
 
@@ -143,6 +155,8 @@ def flash_build(port: str, build_dir: str, flash_baud: int = 3000000,
                 output: Callable[[str], None] | None = None) -> int:
     if port.startswith("hub://"):
         raise ValueError("flash requires a physical UART, not a hub:// endpoint")
+    if runtime.frozen():  # no external esptool in a bundle
+        return flash_build_in_process(port, build_dir, flash_baud, output)
     command = build_flash_command(port, build_dir, flash_baud)
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True, encoding="utf-8", errors="replace",
@@ -192,7 +206,44 @@ def flash_build_in_process(port: str, build_dir: str, flash_baud: int = 3000000,
     return 0
 
 
-def main() -> int:
+def self_test() -> int:
+    """Load esptool and the flasher stub of every chip it knows (bundle smoke test)."""
+    import base64
+    try:
+        esptool = _import_esptool(Path.cwd())
+        from esptool.loader import StubFlasher
+        from esptool.targets import CHIP_DEFS
+    except Exception as exc:
+        print(f"esptool unavailable: {exc}", file=sys.stderr)
+        return 1
+    # Decode exactly the stub files this esptool shipped (upstream has none for
+    # some new chips, and esp32p4 picks a file by chip revision at runtime).
+    stub_root = Path(StubFlasher.STUB_DIR)
+    stubs = sorted(stub_root.glob("*/*.json"))
+    failures = []
+    for path in stubs:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not base64.b64decode(data["text"]) or "entry" not in data:
+                raise ValueError("no code")
+        except Exception as exc:
+            failures.append(f"{path.relative_to(stub_root)}: {exc}")
+    covered = {path.stem.split("-")[0] for path in stubs}
+    # Every ESP32 family that esptool flashes with a stub must have at least one file.
+    for name in ("esp8266", "esp32", "esp32s2", "esp32s3", "esp32c2", "esp32c3", "esp32c5",
+                 "esp32c6", "esp32h2", "esp32p4"):
+        if name in CHIP_DEFS and name not in covered:
+            failures.append(f"{name}: no stub file")
+    version = getattr(esptool, "__version__", "?")
+    if failures or not stubs:
+        print(f"esptool {version}: stub check failed: " + ("; ".join(failures) or "no stubs found"),
+              file=sys.stderr)
+        return 1
+    print(f"esptool {version}: {len(stubs)} stub files OK ({', '.join(sorted(covered))})")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     try:
         from .ipc import configure_console_streams
     except ImportError:
@@ -206,7 +257,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true",
                         help="print the esptool command as a JSON list")
     parser.add_argument("--yes", action="store_true", help="confirm the destructive flash operation")
-    args = parser.parse_args()
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    if "--self-test" in (sys.argv[1:] if argv is None else argv):
+        return self_test()
+    args = parser.parse_args(argv)
     if args.port.startswith("hub://"):
         print("flash requires a physical UART, not a hub:// endpoint", file=sys.stderr)
         return 2
@@ -215,7 +269,7 @@ def main() -> int:
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"flash setup failed: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(command) if args.json else " ".join(command), flush=True)
+    print(json.dumps(command) if args.json else runtime.shell_command(command), flush=True)
     if args.dry_run:
         return 0
     if not args.yes:

@@ -224,7 +224,7 @@ class HubControlDeck(ControlDeck):
         self.root.destroy()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int | None:
     try:
         from .ipc import configure_console_streams
     except ImportError:
@@ -236,10 +236,19 @@ def main() -> None:
     parser.add_argument("--baud", type=int, default=2000000)
     parser.add_argument("--elf", default="", help="application ELF for address decoding")
     parser.add_argument("--attach-only", action="store_true", help="require an existing hub")
+    parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--auto-connect", action="store_true",
                         help="claim the selected UART and connect immediately")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     root = tk.Tk()
+    if args.smoke_test:
+        # A real Tk window with the full deck UI (fonts, styles, widgets),
+        # built without a hub or UART so it runs anywhere with a display.
+        ControlDeck(root, "", args.baud, args.elf)
+        root.update()
+        print(f"SMOKE TK OK (Tk {root.tk.call('info', 'patchlevel')})", flush=True)
+        root.destroy()
+        return 0
     try:
         deck = HubControlDeck(
             root,

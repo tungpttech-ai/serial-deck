@@ -1,0 +1,39 @@
+name: Lock build dependencies
+
+# Regenerates packaging/requirements/<platform>.txt (hashed, per OS/arch) on the
+# platform it describes, so markers and wheel selection match the release
+# builders. Run by hand; download the artifact and commit the files.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2022, name: windows-x86_64}
+          - {runner: macos-15, name: macos-arm64}
+          - {runner: macos-15-intel, name: macos-x86_64}
+          - {runner: ubuntu-22.04, name: linux-x86_64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compile
+        shell: bash
+        run: |
+          python -m pip install "pip-tools==7.6.1"
+          python -m piptools compile --quiet --generate-hashes --allow-unsafe --strip-extras \
+            --pip-args "--only-binary cryptography,cffi,pydantic-core,pythonnet,clr-loader,pyobjc-core,pyobjc-framework-cocoa,pyobjc-framework-webkit,pyobjc-framework-quartz,pyobjc-framework-security,pyobjc-framework-uniformtypeidentifiers" --output-file "packaging/requirements/${{ matrix.name }}.txt" \
+            packaging/requirements/build.in
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lock-${{ matrix.name }}
+          path: packaging/requirements/${{ matrix.name }}.txt

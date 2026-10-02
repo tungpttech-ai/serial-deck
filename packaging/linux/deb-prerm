@@ -1,0 +1,22 @@
+#!/bin/sh
+# dpkg replaces and removes package files itself, so files a running Serial
+# Deck process still loads cannot be kept. Refuse removal instead, before
+# anything is removed, while any process runs from /opt/serial-deck.
+set -e
+case "$1" in remove|upgrade|deconfigure) ;; *) exit 0 ;; esac
+busy=""
+for exe in /proc/[0-9]*/exe; do
+    target=$(readlink "$exe" 2>/dev/null) || continue
+    case "$target" in
+        /opt/serial-deck/*)
+            pid=${exe#/proc/}; pid=${pid%/exe}
+            busy="$busy $pid"
+            ;;
+    esac
+done
+if [ -n "$busy" ]; then
+    echo "serial-deck: still running (pids:$busy). Close Serial Deck windows and" >&2
+    echo "run 'serial-deck-cli hub --shutdown' as each user, then retry." >&2
+    exit 1
+fi
+exit 0

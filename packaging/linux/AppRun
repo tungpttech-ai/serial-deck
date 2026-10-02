@@ -1,0 +1,6 @@
+#!/bin/sh
+# AppImage entry: run the bundled launcher with all arguments.
+# APPIMAGE / APPDIR are set by the AppImage runtime; the app reads them to
+# relaunch its hub and MCP server through the AppImage, in the same mode.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/serial-deck/serial-deck" "$@"

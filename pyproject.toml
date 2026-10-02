@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serial-deck"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Shared serial console: one UART hub for many dashboards, a Web/Desktop UI, ESP32 flashing and an MCP server for AI agents"
 readme = "README.md"
 license = "Apache-2.0"
@@ -49,6 +49,9 @@ Issues = "https://github.com/tungpttech-ai/serial-deck/issues"
 [tool.setuptools]
 packages = ["serial_deck"]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "serial_deck.__version__"}
 
 [tool.setuptools.package-data]
 serial_deck = ["web_assets/**/*"]

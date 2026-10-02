@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from . import runtime
     from .uart_client import (
         FRAME_COMMAND,
         FRAME_HELLO,
@@ -35,6 +36,7 @@ try:
     )
     from .flash import build_flash_command, flash_build
 except ImportError:
+    import runtime
     from uart_client import (
         FRAME_COMMAND,
         FRAME_HELLO,
@@ -177,7 +179,7 @@ class ElfSymbolizer:
         if not addresses:
             return []
         try:
-            result = subprocess.run(
+            result = runtime.run_host(  # a host tool: undo the bundle's loader state
                 [self.tool_path, "-pfiaC", "-e", self.elf_path, *addresses],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=1.0, check=False,
@@ -1010,7 +1012,7 @@ class ControlDeck:
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
             messagebox.showerror("Flash setup", str(exc))
             return
-        command_text = " ".join(command)
+        command_text = runtime.shell_command(command)
         if not messagebox.askyesno(
                 "Confirm Flash",
                 f"This will write the build to {port}.\n\n{command_text}\n\nContinue?"):
@@ -1089,13 +1091,13 @@ class ControlDeck:
         self.root.destroy()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     # Keep the historical launcher, but all device access goes through the hub.
     try:
         from .desktop_hub import main as hub_main
     except ImportError:
         from desktop_hub import main as hub_main
-    hub_main()
+    hub_main(argv)
 
 
 if __name__ == "__main__":
