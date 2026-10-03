@@ -50,7 +50,7 @@ Python 3.10 or newer. Serial Deck is not on PyPI yet; install the wheel from a
 release, or from a checkout:
 
 ```bash
-python -m pip install "serial-deck[app,mcp] @ https://github.com/tungpttech-ai/serial-deck/releases/download/v0.2.0/serial_deck-0.2.0-py3-none-any.whl"
+python -m pip install "serial-deck[app,mcp] @ https://github.com/tungpttech-ai/serial-deck/releases/download/v0.2.1/serial_deck-0.2.1-py3-none-any.whl"
 ```
 
 `[app]` adds the native window (pywebview), `[mcp]` the MCP server; the base

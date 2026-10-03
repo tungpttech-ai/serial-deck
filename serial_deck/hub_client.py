@@ -343,6 +343,7 @@ class HubProcessManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             text=True,
+            env=runtime.self_command_env() if runtime.frozen() and not self._explicit_hub_script else None,
             **detach,
         )
         self.owns_process = True

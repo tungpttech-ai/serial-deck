@@ -290,7 +290,11 @@ def main() -> int:
         hub_cmd = json.loads(run(cli, env, "hub", "--status").stdout)
         assert hub_cmd["pid"] == hub_pid
         mcp_cmd = mcp_registration(port)
-        assert Path(mcp_cmd[0]).name.startswith(("serial-deck-cli", "SerialDeck")), mcp_cmd
+        # The registration must name this bundle's own console executable (or the
+        # AppImage file itself), never a Python interpreter.
+        assert Path(mcp_cmd[0]).resolve() in {Path(cli).resolve(), Path(cli).resolve().with_name(
+            Path(cli).name.replace("serial-deck", "serial-deck-cli"))} \
+            or Path(mcp_cmd[0]).name.startswith("serial-deck-cli"), mcp_cmd
         mcp_cmd = [*mcp_cmd[:-1], "observe"] if mcp_cmd[-2] == "--allow" else mcp_cmd
         assert any(t["name"] == "serial_connect" for t in mcp_tools(mcp_cmd, env))
         print(f"registered MCP command works: {mcp_cmd[:2]}")

@@ -85,6 +85,20 @@ def host_env() -> dict[str, str]:
     return env
 
 
+def self_command_env() -> dict[str, str] | None:
+    """Environment for running a self_command(); None means "inherit as is".
+
+    Inside an AppImage the relaunch goes through the AppImage file, whose AppRun
+    is a /bin/sh script: it must start with the host's loader path, or a host
+    shell resolves its libraries from our bundle and dies (on Arch, /bin/sh is
+    bash and our libreadline is older than its own). The bundle sets its own
+    LD_LIBRARY_PATH again when it starts.
+    """
+    if frozen() and os.environ.get("APPIMAGE"):
+        return host_env()
+    return None
+
+
 
 
 def report_status(**fields: object) -> None:
