@@ -469,7 +469,7 @@ jobs:
           # The flag form: the runtime strips it, the app must still relaunch extracted.
           printf '#!/bin/sh\nexec "%s" --appimage-extract-and-run "$@"\n' "$img" > "$RUNNER_TEMP/sd-flagged"
           chmod +x "$RUNNER_TEMP/sd-flagged"
-          python packaging/smoke_test.py "$RUNNER_TEMP/sd-flagged"
+          python packaging/smoke_test.py "$RUNNER_TEMP/sd-flagged" --mcp-executable "$img"
       - name: AppImage on distros with a different /bin/sh (Arch, Fedora)
         timeout-minutes: 20
         run: |
