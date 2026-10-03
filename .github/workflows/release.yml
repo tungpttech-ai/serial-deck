@@ -533,12 +533,19 @@ jobs:
           path: downloads
       - name: Collect release files (not the lock files)
         run: |
+          set -euo pipefail
           mkdir artifacts
+          # Artifacts keep their upload layout (e.g. windows/installer/*.exe), so
+          # collect every file at any depth; lock-* artifacts are not release files.
           for dir in downloads/*/; do
             case "$(basename "$dir")" in lock-*) continue ;; esac
-            cp "$dir"* artifacts/
+            find "$dir" -type f -exec cp -n {} artifacts/ \;
           done
           ls -la artifacts
+          for pattern in '*-Setup.exe' '*-win-x64.zip' '*-macos-arm64.dmg' '*-macos-x86_64.dmg' \
+                         '*.AppImage' '*_amd64.deb' '*.whl' '*.tar.gz'; do
+            compgen -G "artifacts/$pattern" >/dev/null || { echo "missing release file: $pattern" >&2; exit 1; }
+          done
       - name: Checksums
         run: |
           cd artifacts
