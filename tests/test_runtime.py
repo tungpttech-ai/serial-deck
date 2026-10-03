@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import serial_deck
 from serial_deck import flash, launcher, mcp_status, runtime
 from serial_deck.hub_client import HubProcessManager
 
@@ -65,6 +66,24 @@ class FrozenSelfCommandTest(unittest.TestCase):
         with patch.object(sys, "frozen", False, create=True), \
                 patch.dict(os.environ, {"LD_LIBRARY_PATH": "/x"}):
             self.assertEqual(runtime.host_env()["LD_LIBRARY_PATH"], "/x")
+
+
+class SelfCommandEnvTest(unittest.TestCase):
+    def test_appimage_relaunch_gets_the_host_loader_path(self):
+        env = {"APPIMAGE": "/home/u/SerialDeck.AppImage", "LD_LIBRARY_PATH": "/tmp/.mount_x/usr/lib/serial-deck/_internal"}
+        with patch.object(sys, "frozen", True, create=True), patch.dict(os.environ, env):
+            os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+            child = runtime.self_command_env()
+        self.assertIsNotNone(child)
+        self.assertNotIn("LD_LIBRARY_PATH", child)  # the AppRun shell must use host libraries
+        self.assertEqual(child["APPIMAGE"], "/home/u/SerialDeck.AppImage")
+
+    def test_plain_bundles_and_pip_installs_inherit(self):
+        with patch.object(sys, "frozen", True, create=True), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("APPIMAGE", None)
+            self.assertIsNone(runtime.self_command_env())
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertIsNone(runtime.self_command_env())
 
 
 class HostExecTest(unittest.TestCase):
@@ -139,6 +158,22 @@ class FrozenIntegrationTest(unittest.TestCase):
         self.assertEqual(argv[:2], ["BUNDLE", "hub"])
         self.assertIn("--socket", argv)
 
+    def test_appimage_hub_spawn_drops_the_bundle_loader_path(self):
+        manager = HubProcessManager(socket_path="/tmp/sd-appimage-test.sock")
+        bundle_env = {"APPIMAGE": "/home/u/SerialDeck.AppImage",
+                      "LD_LIBRARY_PATH": "/tmp/.mount_x/usr/lib/serial-deck/_internal"}
+        with patch.object(sys, "frozen", True, create=True), patch.dict(os.environ, bundle_env), \
+                patch("serial_deck.runtime.self_command", side_effect=lambda *a: ["/home/u/SerialDeck.AppImage", *a]), \
+                patch.object(manager, "socket_ready", side_effect=[False, True]), \
+                patch("serial_deck.hub_client.find_existing_hub", return_value=None), \
+                patch("subprocess.Popen") as popen:
+            os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+            popen.return_value.poll.return_value = None
+            manager.ensure_started()
+        env = popen.call_args.kwargs["env"]
+        self.assertIsNotNone(env)
+        self.assertNotIn("LD_LIBRARY_PATH", env)
+
     def test_hub_is_spawned_as_a_module_from_a_pip_install(self):
         manager = HubProcessManager(socket_path="/tmp/sd-pip-test.sock")
         with patch("serial_deck.runtime.frozen", return_value=False), \
@@ -189,7 +224,7 @@ class LauncherTest(unittest.TestCase):
         with redirect_stdout(out):
             self.assertEqual(launcher.main(["--version"]), 0)
             self.assertEqual(launcher.main(["--help"]), 0)
-        self.assertIn("serial-deck 0.2.0", out.getvalue())
+        self.assertIn(f"serial-deck {serial_deck.__version__}", out.getvalue())
         self.assertIn("console", out.getvalue())
 
 

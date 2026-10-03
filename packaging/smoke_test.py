@@ -1,6 +1,7 @@
 """Smoke-test a built Serial Deck bundle, run from outside the checkout.
 
 usage: python smoke_test.py <path-to-serial-deck-cli> [--gui <path-to-gui-exe>]
+                           [--mcp-executable <path-to-bundle-exe>]
 
 Runs with a clean, explicit environment: a private runtime directory (so no
 existing hub is reused) and a PATH without Python or esptool. Each step has a
@@ -221,6 +222,14 @@ def mcp_registration(port: int) -> list[str]:
     return [config["command"], *config["args"]]
 
 
+def assert_mcp_executable(command: list[str], expected: str) -> None:
+    """Registration must use this bundle, even when the test CLI is a wrapper."""
+    bundle = Path(expected).resolve()
+    console = bundle.with_name("serial-deck-cli.exe" if bundle.suffix.lower() == ".exe"
+                               else "serial-deck-cli")
+    assert Path(command[0]).resolve() in {bundle, console.resolve()}, command
+
+
 def wait_url(url: str, timeout: float = DEADLINE) -> str:
     deadline = time.monotonic() + timeout
     while True:
@@ -237,6 +246,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("cli")
     parser.add_argument("--gui")
+    parser.add_argument("--mcp-executable",
+                        help="expected MCP executable when cli is a wrapper (default: cli)")
     parser.add_argument("--window", action="store_true",
                         help="also open the real app window (needs a desktop session)")
     args = parser.parse_args()
@@ -290,7 +301,9 @@ def main() -> int:
         hub_cmd = json.loads(run(cli, env, "hub", "--status").stdout)
         assert hub_cmd["pid"] == hub_pid
         mcp_cmd = mcp_registration(port)
-        assert Path(mcp_cmd[0]).name.startswith(("serial-deck-cli", "SerialDeck")), mcp_cmd
+        # The registration must name this bundle's own console executable (or the
+        # AppImage file itself), never a Python interpreter.
+        assert_mcp_executable(mcp_cmd, args.mcp_executable or cli)
         mcp_cmd = [*mcp_cmd[:-1], "observe"] if mcp_cmd[-2] == "--allow" else mcp_cmd
         assert any(t["name"] == "serial_connect" for t in mcp_tools(mcp_cmd, env))
         print(f"registered MCP command works: {mcp_cmd[:2]}")

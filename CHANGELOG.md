@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 (2026-10-03)
+
+- Linux AppImage: the app could not start its hub on distributions whose
+  `/bin/sh` is bash (Arch, Fedora, Manjaro, ...): the relaunch inherited the
+  bundle's library path and the AppRun shell crashed. Relaunches now use the
+  host's libraries. The `.deb`, Windows and macOS builds were not affected.
+- Release checks now also run the AppImage on Arch Linux and Fedora.
+
 ## 0.2.0 (2026-10-02)
 
 Native installers: no Python needed.

@@ -469,7 +469,25 @@ jobs:
           # The flag form: the runtime strips it, the app must still relaunch extracted.
           printf '#!/bin/sh\nexec "%s" --appimage-extract-and-run "$@"\n' "$img" > "$RUNNER_TEMP/sd-flagged"
           chmod +x "$RUNNER_TEMP/sd-flagged"
-          python packaging/smoke_test.py "$RUNNER_TEMP/sd-flagged"
+          python packaging/smoke_test.py "$RUNNER_TEMP/sd-flagged" --mcp-executable "$img"
+      - name: AppImage on distros with a different /bin/sh (Arch, Fedora)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          img=$(readlink -f dist/*.AppImage)
+          # Ubuntu's /bin/sh is dash; on Arch and Fedora it is bash linked against the
+          # system readline. The app relaunches itself through AppRun (a /bin/sh
+          # script), which must never load the bundle's own libraries.
+          for image in archlinux:latest fedora:latest; do
+            echo "::group::$image"
+            timeout 900 docker run --rm -e APPIMAGE_EXTRACT_AND_RUN=1 \
+              -v "$img:/app.AppImage:ro" -v "$PWD/packaging:/packaging:ro" "$image" sh -ec '
+                if command -v pacman >/dev/null; then pacman -Sy --noconfirm --quiet python >/dev/null; \
+                else dnf -y -q install python3 >/dev/null; fi
+                cp /app.AppImage /tmp/app.AppImage && chmod +x /tmp/app.AppImage
+                python3 /packaging/smoke_test.py /tmp/app.AppImage'
+            echo "::endgroup::"
+          done
       - name: Debian package
         run: packaging/linux/build-deb.sh dist/serial-deck "${{ needs.prepare.outputs.version }}" dist
       - name: Debian package install/upgrade/remove in clean containers
