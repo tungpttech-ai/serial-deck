@@ -145,6 +145,48 @@ until you pair again on purpose. **Forget device...** removes the key from the
 host and the profile from this machine. Needs the `ssh`, `ssh-keygen` and
 `ssh-keyscan` programs on your PATH (OpenSSH).
 
+## Automation
+
+Open **Automation** in the left bar.
+
+**Auto-connect** is off until you switch it on, because opening a UART can reset
+a board. The **Auto-reconnect** checkbox next to Connect brings a dropped device
+back with the same baud and mode, following a replugged USB board to its new port
+name by vid:pid and serial number. On the Automation page you can also reopen last
+session's ports at start, and add **rules** ("when this USB device is plugged in,
+connect it at this baud in this mode"). Settings live in
+`~/.config/serial-deck/settings.json`.
+
+**Python scripts** are files you write in `~/.config/serial-deck/scripts/`:
+
+```python
+"""Log in to a Linux board and watch for panics."""
+
+def run(dev):
+    dev.expect(r"login:", timeout=30)
+    dev.send_line("root")
+    dev.expect(r"# ", timeout=10)
+
+def on_line(dev, line):
+    if "Kernel panic" in line:
+        dev.log("the board panicked")
+```
+
+`dev.expect(regex, timeout)`, `dev.expect_any([...])`, `dev.send(text_or_bytes)`,
+`dev.send_line(text)`, `dev.send_frame(bytes)` (control mode), `dev.sleep(s)`,
+`dev.flush()` and `dev.log(text)`. A script with only `on_line` keeps listening
+until stopped. Run them from the Automation page, from a terminal
+(`serial-deck script list|run|start|stop|status`) or through MCP. The hub runs each
+script as its own process, so it keeps going with the window closed; tick "run when
+this port opens" to start it on every connect. A script is code you wrote and runs
+with your permissions, but it only gets the device's data stream: it cannot reset
+the board, enter the bootloader or flash it. The dashboard and MCP can run and stop
+scripts, never create or change one.
+
+**JavaScript snippets** (also on the Automation page) run in an isolated sandbox
+with no access to the dashboard or your files; they only send to the connected
+device and read what it sends, and stop when the window closes.
+
 ## Flashing ESP32 firmware
 
 Build with ESP-IDF, then pick the **absolute** build directory in the Flash

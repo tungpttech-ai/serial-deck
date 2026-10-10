@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Auto-connect, always off until you turn it on (opening a UART can reset a
+  board):
+  - **Auto-reconnect** (checkbox next to Connect): a device that is unplugged,
+    reset or whose link drops comes back by itself with the same baud and mode.
+    A replugged USB board is found again by its vid:pid and serial number even if
+    its port name changed. A manual Disconnect is never undone, and nothing
+    reconnects during a flash.
+  - **Restore on start**: reopen the ports you had open last time.
+  - **Device rules**: when a matching USB device is plugged in, connect it with
+    the baud and mode you chose. Each plug-in is acted on once.
+- Scripts (Automation page, `serial-deck script`, MCP):
+  - **Python scripts** in `~/.config/serial-deck/scripts/`: `run(dev)` and/or
+    `on_line(dev, line)` with `dev.expect`, `dev.send_line`, `dev.send_frame`,
+    `dev.sleep`, `dev.log`. They run as separate processes under the hub, so they
+    keep going with no window open, can start automatically when a port opens, and
+    are stopped with the hub. They cannot reset, enter the bootloader or flash.
+    Nothing in the dashboard or MCP can create or edit a script.
+  - **JavaScript snippets**: quick scripts in an isolated browser sandbox that can
+    only send to the connected device and read what it sends.
+  - MCP: `serial_script_list`/`_status` (observe), `serial_script_run`/`_stop`
+    (interact).
+
 - Linux frozen bundles now include the Qt WebEngine backend and open the
   dashboard in a native window by default.
 
