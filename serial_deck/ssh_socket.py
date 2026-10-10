@@ -31,9 +31,11 @@ from typing import Any, Callable
 
 try:
     from . import ipc, runtime
+    from .deckconfig import config_dir, private_dir, write_private
 except ImportError:
     import ipc
     import runtime
+    from deckconfig import config_dir, private_dir, write_private
 
 SCHEME = "ssh-socket://"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
@@ -69,41 +71,12 @@ def require_supported() -> None:
         raise SshSocketError("unsupported", "ssh-socket:// devices need Linux or macOS")
 
 
-def config_dir() -> Path:
-    base = os.environ.get("SERIAL_DECK_CONFIG") or os.path.join(
-        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "serial-deck")
-    return Path(base)
-
-
 def tunnel_dir() -> Path:
     """Local tunnel sockets: kept short (macOS sun_path is 104 bytes), 0700."""
     base = ipc.runtime_dir()
     if len(os.fsencode(str(base))) > 60:
         base = ipc.private_dir(Path(f"/tmp/serial-deck-{ipc._uid_tag()}"))
     return ipc.private_dir(base / "ssh")
-
-
-def _private_dir(path: Path) -> Path:
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
-    return path
-
-
-def _write_private(path: Path, text: str) -> None:
-    """Atomic 0600 write next to `path`."""
-    _private_dir(path.parent)
-    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.chmod(temp, 0o600)
-        os.replace(temp, path)
-    except BaseException:
-        try:
-            os.unlink(temp)
-        except FileNotFoundError:
-            pass
-        raise
 
 
 def redact_text(text: str) -> str:
@@ -155,7 +128,7 @@ class DeviceStore:
 
     def _dump(self, devices: dict[str, dict[str, Any]]) -> None:
         import json
-        _write_private(self.devices_path, json.dumps({"version": 1, "devices": devices}, indent=2) + "\n")
+        write_private(self.devices_path, json.dumps({"version": 1, "devices": devices}, indent=2) + "\n")
 
     def get(self, name: str) -> dict[str, Any]:
         devices = self.load()
@@ -189,7 +162,7 @@ class DeviceStore:
     def set_known_host(self, entry_host: str, lines: list[str]) -> None:
         with self.lock:
             kept = [line for line in self._known_lines() if line.split(" ", 1)[0] != entry_host]
-            _write_private(self.known_hosts, "".join(f"{line}\n" for line in kept + lines))
+            write_private(self.known_hosts, "".join(f"{line}\n" for line in kept + lines))
 
     def drop_known_host(self, entry_host: str) -> None:
         self.set_known_host(entry_host, [])
@@ -421,7 +394,7 @@ def pinned_fingerprints(store: DeviceStore, host: str, port: int) -> list[str]:
 def generate_key(store: DeviceStore, name: str, passphrase: bytearray | None = None) -> tuple[Path, str]:
     """Device key; with `passphrase` it is encrypted and every connect asks for it."""
     key = store.key_path(name)
-    _private_dir(key.parent)
+    private_dir(key.parent)
     if passphrase:
         for path in (key, Path(f"{key}.pub")):
             try:

@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 try:
     from . import mcp_status, runtime, ssh_socket
+    from .deckconfig import JsonFile
     from .hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from .uart_client import (
@@ -44,6 +45,8 @@ try:
         discover_serial_port_details,
         is_non_serial_port,
         port_kind,
+        find_port_by_usb,
+        usb_identity,
         open_uart_transport,
         UartReader,
         encode_json_frame,
@@ -55,6 +58,7 @@ except ImportError:
     import mcp_status
     import runtime
     import ssh_socket
+    from deckconfig import JsonFile
     from hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from uart_client import (
@@ -68,6 +72,8 @@ except ImportError:
         discover_serial_port_details,
         is_non_serial_port,
         port_kind,
+        find_port_by_usb,
+        usb_identity,
         open_uart_transport,
         UartReader,
         encode_json_frame,
@@ -264,6 +270,7 @@ class DeckWebBridge:
                  elf: str = "", hub_manager: HubProcessManager | None = None,
                  hub_registry: HubRegistry | None = None) -> None:
         self.lock = threading.Lock()
+        self.connect_lock = threading.Lock()
         self.transport: Any = None
         self.reader: UartReader | None = None
         self.reader_thread: threading.Thread | None = None
@@ -302,6 +309,13 @@ class DeckWebBridge:
         self.flash_exit_code: int | None = None
         self.hub_state = "idle"
         self.link: dict[str, Any] | None = None  # SSH tunnel state from the hub
+        # Auto-reconnect. `generation` changes on every user connect/disconnect
+        # and on close, which ends a pending retry loop.
+        self.auto_reconnect = False
+        self.reconnecting = False
+        self.generation = 0
+        self._closed = False
+        self._remembered: dict[str, Any] | None = None
         self._last_hub_flash_line: tuple[int, str] | None = None
         self.hub_manager = hub_manager
         self.hub_registry = hub_registry
@@ -363,6 +377,8 @@ class DeckWebBridge:
                 "transport_label": transport_label(self.port, self.console_mode),
                 "port_kind": port_kind(self.port),
                 "link": self.link,
+                "auto_reconnect": self.auto_reconnect,
+                "reconnecting": self.reconnecting,
             }
 
     def list_ports(self) -> list[str]:
@@ -391,6 +407,13 @@ class DeckWebBridge:
 
     def connect(self, port: str, baud: int, mode: str | None = None,
                 on_baud_conflict: str = "join", passphrase: str = "") -> dict[str, Any]:
+        self.generation += 1  # a user connect ends any retry loop
+        self.reconnecting = False
+        with self.connect_lock:
+            return self._connect(port, baud, mode, on_baud_conflict, passphrase)
+
+    def _connect(self, port: str, baud: int, mode: str | None = None,
+                 on_baud_conflict: str = "join", passphrase: str = "") -> dict[str, Any]:
         if not port or port.startswith("hub://"):
             raise ValueError("Select a serial port, an SSH device or a tcp:// / udp:// / unix:// endpoint")
         if mode is not None and mode not in CONSOLE_MODES:
@@ -450,6 +473,7 @@ class DeckWebBridge:
             self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
             self.reader_thread.start()
 
+        self._remember_device(port, baud)
         self._send_hello()
         self.broadcast({
             "type": "status",
@@ -457,7 +481,29 @@ class DeckWebBridge:
         })
         return self.get_status()
 
+    def _remember_device(self, port: str, baud: int) -> None:
+        """What a reconnect needs: the port, its baud and mode, and (for a UART) the
+        USB identity, because the path can change when the board is replugged."""
+        identity = usb_identity(port) if not is_non_serial_port(port) else {}
+        self._remembered = {"port": port, "baud": baud, "mode": self.console_mode,
+                            "usb_vid_pid": identity.get("usb_vid_pid", ""),
+                            "usb_serial": identity.get("usb_serial", "")}
+
+    def set_auto_reconnect(self, enabled: bool) -> dict[str, Any]:
+        self.auto_reconnect = bool(enabled)
+        if not self.auto_reconnect:
+            self.reconnecting = False
+            self.generation += 1  # cancel a pending retry
+        status = self.get_status()
+        self.broadcast({"type": "status", **status})
+        return status
+
     def disconnect(self) -> dict[str, Any]:
+        self.generation += 1  # the user (or close) wants it off: no reconnect
+        self.reconnecting = False
+        return self._drop_connection()
+
+    def _drop_connection(self) -> dict[str, Any]:
         with self.lock:
             self._disconnect_locked()
         try:
@@ -493,6 +539,79 @@ class DeckWebBridge:
         self.dtr_state = None
         self.rts_state = None
 
+    def _lost(self) -> None:
+        """The device went away (unplug, reset, link drop), as opposed to the user
+        pressing Disconnect. Tear the connection down; if auto-reconnect is on,
+        keep trying in the background until it is back or the user intervenes."""
+        generation = self.generation
+        remembered = dict(self._remembered) if self._remembered else None
+        self._drop_connection()
+        if (self.auto_reconnect and remembered and not self._closed
+                and generation == self.generation and not self.reconnecting):
+            self.reconnecting = True
+            self.broadcast({"type": "status", **self.get_status()})
+            threading.Thread(target=self._reconnect_loop, args=(generation, remembered),
+                             name="serial-deck-reconnect", daemon=True).start()
+
+    RECONNECT_BACKOFF = (0.3, 0.5, 1.0, 1.0, 2.0, 2.0, 3.0)
+
+    def _still_wanted(self, generation: int) -> bool:
+        return (generation == self.generation and self.auto_reconnect and not self._closed
+                and not self.flashing)
+
+    def _reconnect_loop(self, generation: int, remembered: dict[str, Any]) -> None:
+        try:
+            self._reconnect_attempts(generation, remembered)
+        except Exception as exc:  # never die silently with the pill stuck on "Reconnecting"
+            self.broadcast({"type": "log", "level": "error", "text": f"[auto-reconnect] stopped: {exc}"})
+        finally:
+            if generation == self.generation:
+                self.reconnecting = False
+                self.broadcast({"type": "status", **self.get_status()})
+
+    def _reconnect_attempts(self, generation: int, remembered: dict[str, Any]) -> None:
+        attempt = 0
+        announced = False
+        while self._still_wanted(generation):
+            delay = self.RECONNECT_BACKOFF[min(attempt, len(self.RECONNECT_BACKOFF) - 1)]
+            attempt += 1
+            time.sleep(delay)
+            if not self._still_wanted(generation):
+                return
+            port = self._resolve_remembered_port(remembered)
+            if port is None:
+                continue  # not plugged back in yet
+            if not announced:
+                announced = True
+                self.broadcast({"type": "log", "level": "info",
+                                "text": f"[auto-reconnect] {port} is back, reconnecting"})
+            try:
+                with self.connect_lock:
+                    if not self._still_wanted(generation):
+                        return
+                    self._connect(port, int(remembered["baud"]), remembered.get("mode"), "join")
+            except Exception as exc:
+                if attempt % 5 == 0:
+                    self.broadcast({"type": "log", "level": "warning",
+                                    "text": f"[auto-reconnect] {port}: {exc}"})
+                continue
+            self.broadcast({"type": "log", "level": "info", "text": f"[auto-reconnect] connected to {port}"})
+            return
+
+    def _resolve_remembered_port(self, remembered: dict[str, Any]) -> str | None:
+        """Where the remembered device is now, or None while it is absent."""
+        port = str(remembered["port"])
+        if is_non_serial_port(port):
+            return port  # an SSH/TCP/unix endpoint keeps its name
+        try:
+            present = self.list_ports()
+        except Exception:
+            return None
+        vid_pid = remembered.get("usb_vid_pid") or ""
+        if vid_pid:
+            return find_port_by_usb(vid_pid, remembered.get("usb_serial") or "", present)
+        return port if port in present else None
+
     def _reader_loop(self) -> None:
         reader = self.reader
         while not self.stop_reader.is_set() and reader is not None:
@@ -504,12 +623,14 @@ class DeckWebBridge:
                 for record in records:
                     self._handle_record(record)
             except Exception as exc:
+                if self.stop_reader.is_set():
+                    return  # we are closing the transport ourselves
                 self.broadcast({
                     "type": "log",
                     "level": "error",
                     "text": f"[serial error] {exc}",
                 })
-                self.disconnect()
+                self._lost()
                 return
 
     def _broadcast_raw(self, chunk: bytes) -> None:
@@ -733,7 +854,7 @@ class DeckWebBridge:
                 "level": "error",
                 "text": "[hub] physical UART was lost",
             })
-            self.disconnect()
+            self._lost()
             return
         if retimed is not None and not is_non_serial_port(self.port):
             self.broadcast({
@@ -774,6 +895,7 @@ class DeckWebBridge:
             })
 
     def close(self) -> None:
+        self._closed = True
         self.disconnect()
         if self.hub_manager is not None:
             self.hub_manager.unsubscribe()
@@ -1234,6 +1356,10 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
 
             if path.startswith("/api/ssh/"):
                 self._send_json(*self._ssh_request(path[len("/api/ssh/"):], body))
+                return
+
+            if path == "/api/auto_reconnect":
+                self._send_json({"ok": True, "status": bridge.set_auto_reconnect(bool(body.get("enabled")))})
                 return
 
             if path == "/api/disconnect":
@@ -1718,6 +1844,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <button id="quitBtn" onclick="quitApp()" title="Stop Serial Deck (the hub keeps running for other tools)" class="hidden px-3 py-1 rounded text-xs font-bold border border-brand-border text-brand-muted hover:text-brand-danger hover:border-brand-danger transition">Quit</button>
 
+        <label id="autoReconnectLabel" class="flex items-center space-x-1 text-[11px] text-brand-muted cursor-pointer select-none" title="Reconnect by itself when the device is unplugged, reset or the link drops">
+          <input id="autoReconnect" type="checkbox" onchange="setAutoReconnect(this.checked)" class="accent-[#00daf3]">
+          <span>Auto-reconnect</span>
+        </label>
         <button id="connectBtn" onclick="toggleConnect()" class="px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-accent hover:bg-brand-accentHover text-brand-bg shadow">
           <i class="fa-solid fa-plug text-xs"></i>
           <span id="connectBtnText">Connect</span>
@@ -2620,6 +2750,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
     let connectPassphrase = '';
 
+    async function setAutoReconnect(enabled) {
+      // Remembered per browser so it survives a restart; the hub-side switch is per tab.
+      try { localStorage.setItem('serialdeck.autoReconnect', enabled ? '1' : '0'); } catch (err) {}
+      await fetch('/api/auto_reconnect', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: connId, enabled })
+      });
+    }
+
     async function toggleConnect() {
       const port = selectedPort();
       const baud = parseInt(document.getElementById('baudSelect').value);
@@ -3306,6 +3445,12 @@ HTML_PAGE = """<!DOCTYPE html>
 
       applyPortKindUi(connected ? st.port : selectedPort());
       updateLinkFix(connected ? st : null);
+      if (typeof st.auto_reconnect === 'boolean') document.getElementById('autoReconnect').checked = st.auto_reconnect;
+      if (!connected && st.reconnecting) {
+        dot.className = "w-2.5 h-2.5 rounded-full bg-brand-warning animate-pulse";
+        lbl.innerText = "Reconnecting…";
+        lbl.className = "mono text-brand-warning font-bold";
+      }
       if (st.console_mode) applyModeUi(st.console_mode);
       if (st.fsm) {
         document.getElementById('fsmBadge').innerText = st.fsm;

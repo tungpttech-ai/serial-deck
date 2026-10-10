@@ -31,7 +31,7 @@ try:
     from .uart_client import (
         FRAME_COMMAND, FRAME_ERROR, FRAME_EVENT, FRAME_HELLO, FRAME_NAMES, FRAME_RESPONSE,
         PROTOCOL_VERSION, FrameDispatchUnknown, UartReader, discover_serial_port_details, encode_json_frame,
-        is_device_port, is_non_serial_port, make_request, open_uart_transport, send_frame)
+        is_device_port, is_non_serial_port, make_request, open_uart_transport, send_frame, usb_identity)
 except ImportError:
     import flash_snapshot as snapshots
     import mcp_status as mcp_status
@@ -41,7 +41,7 @@ except ImportError:
     from uart_client import (
         FRAME_COMMAND, FRAME_ERROR, FRAME_EVENT, FRAME_HELLO, FRAME_NAMES, FRAME_RESPONSE,
         PROTOCOL_VERSION, FrameDispatchUnknown, UartReader, discover_serial_port_details, encode_json_frame,
-        is_device_port, is_non_serial_port, make_request, open_uart_transport, send_frame)
+        is_device_port, is_non_serial_port, make_request, open_uart_transport, send_frame, usb_identity)
 
 POLICIES = ("observe", "interact", "hardware")
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "expired", "rejected"}
@@ -1167,23 +1167,3 @@ class DeckAgent:
                 "step": redact(str(finished.get("step") or ""))}
 
 
-def usb_identity(device: str) -> dict[str, str]:
-    """USB vid:pid:serial for a tty from sysfs, without opening it."""
-    if not device.startswith("/dev/"):
-        return {}
-    try:
-        parent = (Path("/sys/class/tty") / Path(os.path.realpath(device)).name / "device").resolve()
-    except OSError:
-        return {}
-    for ancestor in (parent, *list(parent.parents)[:4]):
-        try:
-            vid = (ancestor / "idVendor").read_text().strip()
-            pid = (ancestor / "idProduct").read_text().strip()
-        except OSError:
-            continue
-        try:
-            serial = (ancestor / "serial").read_text().strip()
-        except OSError:
-            serial = ""
-        return {"usb_vid_pid": f"{vid}:{pid}", "usb_serial": serial}
-    return {}

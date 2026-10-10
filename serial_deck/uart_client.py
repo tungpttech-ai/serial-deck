@@ -754,6 +754,47 @@ def serial_port_details(device: str, description: str = "", manufacturer: str = 
     return {"device": device, "description": name, "label": f"{device} - {name}"}
 
 
+def usb_identity(device: str) -> dict[str, str]:
+    """USB vid:pid:serial for a tty from sysfs, without opening it."""
+    if not device.startswith("/dev/"):
+        return {}
+    try:
+        parent = (Path("/sys/class/tty") / Path(os.path.realpath(device)).name / "device").resolve()
+    except OSError:
+        return {}
+    for ancestor in (parent, *list(parent.parents)[:4]):
+        try:
+            vid = (ancestor / "idVendor").read_text().strip()
+            pid = (ancestor / "idProduct").read_text().strip()
+        except OSError:
+            continue
+        try:
+            serial = (ancestor / "serial").read_text().strip()
+        except OSError:
+            serial = ""
+        return {"usb_vid_pid": f"{vid}:{pid}", "usb_serial": serial}
+    return {}
+
+
+def find_port_by_usb(vid_pid: str, serial: str, candidates: list[str] | None = None) -> str | None:
+    """The current tty of a USB device identified by `vid:pid` and serial number.
+
+    A replug can bring the same board back as another path (ttyACM0 -> ttyACM1,
+    COM5 -> COM7), so a reconnect looks the device up by identity. Without a
+    serial number several identical boards are indistinguishable: refuse to guess
+    unless exactly one matches.
+    """
+    found = []
+    for device in (candidates if candidates is not None else discover_serial_ports()):
+        identity = usb_identity(device)
+        if identity.get("usb_vid_pid") != vid_pid:
+            continue
+        if serial and identity.get("usb_serial") != serial:
+            continue
+        found.append(device)
+    return found[0] if len(found) == 1 else None
+
+
 def discover_serial_port_details() -> list[dict[str, str]]:
     """Accessible, configured serial candidates with names; never claim a port.
 
