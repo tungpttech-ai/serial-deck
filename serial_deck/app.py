@@ -459,7 +459,8 @@ def run_app(args: argparse.Namespace,
             return 0 if getattr(controller, "smoke_ok", False) else 4
         webview_module.start(debug=args.debug)
     except Exception as exc:
-        if runtime.frozen() and not controller.window_shown:
+        if (runtime.frozen() and not controller.window_shown
+                and not os.environ.get("SERIAL_DECK_NO_BROWSER_FALLBACK")):
             # The native window never came up (e.g. a broken WebView runtime):
             # keep this dashboard and hand it to the browser instead of failing.
             print(f"The app window could not open ({exc}); using your browser.", file=sys.stderr, flush=True)
