@@ -7,6 +7,7 @@ esptool>=5.0,<6
 pywebview>=5.0,<7
 PyQt6>=6.7; sys_platform == "linux"
 PyQt6-WebEngine>=6.7; sys_platform == "linux"
+QtPy>=2.4; sys_platform == "linux"
 mcp>=2.2,<3
 # cryptography 49+ ships no Intel macOS wheel, so pip builds it from source
 # there; 48.0.1 has universal2 wheels and keeps the Intel build reproducible.
