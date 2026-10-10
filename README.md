@@ -30,7 +30,7 @@ No Python needed.
 | Windows 10/11 (x64) | `SerialDeck-<version>-Setup.exe` | Per-user install, no admin. A portable `-win-x64.zip` is also provided |
 | macOS 15+ (Apple silicon) | `SerialDeck-<version>-macos-arm64.dmg` | Drag *Serial Deck* to Applications |
 | macOS 15+ (Intel) | `SerialDeck-<version>-macos-x86_64.dmg` | |
-| Linux x86_64 (Ubuntu 22.04 / Debian 12) | `serial-deck_<version>_amd64.deb` or `SerialDeck-<version>-x86_64.AppImage` | Native window; use AppImage on newer distributions |
+| Linux x86_64 (Ubuntu 22.04) | `serial-deck_<version>_amd64.deb` or `SerialDeck-<version>-x86_64.AppImage` | Native window; use AppImage on other distributions |
 
 The app is the Web dashboard in its own window; on Linux it uses your browser.
 Every installer also ships `serial-deck-cli` for the hub, CLI and MCP server
