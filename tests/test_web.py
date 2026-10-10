@@ -1,3 +1,4 @@
+import re
 import json
 import tempfile
 import unittest
@@ -204,3 +205,18 @@ class DeckWebTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SmallWindowLogLayoutTest(unittest.TestCase):
+    """Shrinking the window made the log grow to every line instead of scrolling."""
+
+    def test_log_panes_can_shrink_and_scroll(self):
+        self.assertRegex(HTML_PAGE, r"#logsPanePrimary[^{]*\{\s*min-height: 0")
+
+    def test_small_window_console_keeps_its_height_instead_of_growing_with_the_log(self):
+        # `flex: 1 1 0%` in a column of indefinite height ignores `height` and
+        # sizes the panel to its content (all log lines).
+        match = re.search(r"#consolePanel \{([^}]*)\}", HTML_PAGE.split("(max-height: 620px)", 1)[1])
+        self.assertIsNotNone(match)
+        self.assertIn("flex: 0 0 auto", match.group(1))
+        self.assertIn("height: max(520px, 80vh)", match.group(1))

@@ -1573,6 +1573,11 @@ HTML_PAGE = """<!DOCTYPE html>
     #healthBar > div > * { margin-left: 0; }
     #deviceBadge { overflow-wrap: anywhere; min-width: 0; }
     #telemetryPanel, #consolePanel, #viewLogs, #viewEvents, #viewInspector, #viewTerminal { min-height: 0; }
+    /* A log pane is a scroll container: with min-height:auto (the flex default)
+       it grows to fit every line once its parent stacks into a column on a
+       small window, so the log stops scrolling and the page gets thousands of
+       pixels tall. Let it shrink and scroll inside the panel. */
+    #logsPanePrimary, #logsPaneSplit, #logsPaneSplitContent { min-height: 0; min-width: 0; }
     #sidebarPanel { transition: width .15s ease, opacity .15s ease; min-width: 0; }
     #consoleToolbar { flex-wrap: wrap; gap: 8px; }
     #consoleTabs, #consoleFilters, #levelFilters { flex-wrap: wrap; gap: 4px; min-width: 0; }
@@ -1605,8 +1610,11 @@ HTML_PAGE = """<!DOCTYPE html>
     @media (max-width: 900px), (max-height: 620px) {
       body { height: auto !important; min-height: 100vh; overflow: auto !important; }
       #telemetryPanel { overflow: visible; }
-      /* Fixed height for page scrolling, but keep shrinking horizontally. */
-      #consolePanel { flex: 1 1 0%; height: max(520px, 80vh); }
+      /* Fixed height for page scrolling, but keep shrinking horizontally.
+         flex-basis must be auto: with `1 1 0%` in a column whose height is
+         indefinite (body is height:auto here) the basis falls back to the
+         content, `height` is ignored and the panel grows to hold every log line. */
+      #consolePanel { flex: 0 0 auto; height: max(520px, 80vh); }
     }
     @media (max-width: 900px) {
       .control-rail {
@@ -1627,6 +1635,7 @@ HTML_PAGE = """<!DOCTYPE html>
       #sidebarPanel { width: 100% !important; max-width: none; opacity: 1 !important; pointer-events: auto !important; overflow: visible !important; padding-right: 0 !important; }
       #sidebarResizeHandle { display: none; }
       #viewLogs { flex-direction: column; }
+      #logsPanePrimary, #logsPaneSplit { flex: 1 1 0%; }
       #logsPaneSplit { border-left: none; border-top: 1px solid #3b494c; }
     }
     @media (max-width: 560px) {

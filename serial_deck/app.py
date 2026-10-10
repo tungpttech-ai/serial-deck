@@ -173,6 +173,43 @@ def wait_for_backend(port: int, token: str, timeout: float = 5.0,
     raise TimeoutError(f"dashboard backend on {host}:{port} did not become ready: {last_error}")
 
 
+def patch_qt_feature_permissions() -> bool:
+    """Make pywebview's Qt WebEngine permission handler survive PyQt6.
+
+    pywebview 6.x answers a page's permission request with
+    `setFeaturePermission(url, feature, 1 or 2)`. PyQt6 only accepts the
+    `PermissionPolicy` enum there, so the slot raised TypeError and PyQt6 turns
+    an exception in a slot into qFatal: the whole app aborted the moment the page
+    touched the clipboard (the MCP page's Copy buttons) or any other gated
+    feature. Grant what the dashboard needs (clipboard) and deny the rest, using
+    the enum. Returns whether a handler was patched (False off Qt or when
+    pywebview already behaves).
+    """
+    try:
+        from webview.platforms import qt
+        page = qt.BrowserView.WebPage
+        policy = qt.QWebPage.PermissionPolicy
+        feature = qt.QWebPage.Feature
+    except Exception:
+        return False  # not the Qt backend (or no WebEngine): nothing to patch
+    if not getattr(qt, "is_webengine", False):
+        return False
+    grant = {name: getattr(feature, name) for name in
+             ("ClipboardReadWrite", "ClipboardSanitizedWrite") if hasattr(feature, name)}
+    media = tuple(getattr(feature, name) for name in
+                  ("MediaAudioCapture", "MediaVideoCapture", "MediaAudioVideoCapture")
+                  if hasattr(feature, name))
+
+    def on_feature_permission_requested(self: Any, url: Any, requested: Any) -> None:
+        allowed = requested in grant.values() or requested in media
+        self.setFeaturePermission(
+            url, requested,
+            policy.PermissionGrantedByUser if allowed else policy.PermissionDeniedByUser)
+
+    page.onFeaturePermissionRequested = on_feature_permission_requested
+    return True
+
+
 class AppController:
     """Window close policy and signal-driven shutdown for one app window."""
 
@@ -431,6 +468,7 @@ def run_app(args: argparse.Namespace,
         # "Export logs" is a download (Content-Disposition: attachment); with
         # this setting pywebview asks for a destination with a save dialog.
         webview_module.settings["ALLOW_DOWNLOADS"] = True
+        patch_qt_feature_permissions()
         # pywebview injects `body {user-select: none}` unless text_select is
         # on, which made logs, terminal output and the MCP commands
         # uncopyable in the app; the page itself marks chrome as select-none.

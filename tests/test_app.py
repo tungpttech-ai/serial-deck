@@ -825,3 +825,38 @@ class HubOwnershipIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QtFeaturePermissionTest(unittest.TestCase):
+    """The MCP page's Copy buttons aborted the whole app under PyQt6."""
+
+    def test_permission_handler_answers_with_the_enum_not_an_int(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            from qtpy.QtCore import QUrl
+            from qtpy.QtWidgets import QApplication
+            from webview.platforms import qt
+        except Exception as exc:  # no Qt WebEngine on this machine
+            self.skipTest(f"Qt WebEngine unavailable: {exc}")
+        if not getattr(qt, "is_webengine", False):
+            self.skipTest("pywebview is not using Qt WebEngine")
+        qapp = QApplication.instance() or QApplication(sys.argv or ["x"])
+        self.assertTrue(app.patch_qt_feature_permissions())
+        page = qt.QWebPage()
+        answers = []
+        page.setFeaturePermission = lambda url, feature, policy: answers.append((feature, policy))
+        url = QUrl("http://127.0.0.1/")
+        feature, policy = qt.QWebPage.Feature, qt.QWebPage.PermissionPolicy
+        for requested in (feature.ClipboardReadWrite, feature.Notifications, feature.Geolocation):
+            qt.BrowserView.WebPage.onFeaturePermissionRequested(page, url, requested)
+        self.assertEqual(answers, [
+            (feature.ClipboardReadWrite, policy.PermissionGrantedByUser),
+            (feature.Notifications, policy.PermissionDeniedByUser),
+            (feature.Geolocation, policy.PermissionDeniedByUser),
+        ])
+        for _, given in answers:
+            self.assertIsInstance(given, policy)  # an int is what made PyQt6 abort
+
+    def test_patch_is_a_noop_without_the_qt_backend(self):
+        with patch.dict(sys.modules, {"webview.platforms": None, "webview.platforms.qt": None}):
+            self.assertFalse(app.patch_qt_feature_permissions())
