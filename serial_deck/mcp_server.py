@@ -54,12 +54,16 @@ through the user's shared serial-deck UART hub. Typical flow:
 4. Buttons, reset, bootloader and flash require the matching server policy
    and the user's explicit approval for that exact action.
 Never re-send a command whose outcome is 'unknown'; inspect state first.
+SSH devices (a remote Unix socket paired in the dashboard) are listed by serial_list_ports under
+`ssh_devices`; connect with their name. They have no reset/bootloader/flash. Pairing needs the
+user's password and is only done in the dashboard, never through MCP.
 Flash: serial_flash_preview -> show the summary to the user -> serial_flash_start
 -> serial_flash_status until a verdict. Only bootloader, partition table, OTA
 data and app images of an ESP-IDF build can be written."""
 
 Port = Annotated[str | None, Field(description="Device path or COM port, e.g. /dev/ttyACM0, a /dev/serial/by-id "
-                                   "link or COM3; optional when exactly one port is connected")]
+                                   "link or COM3, or a paired SSH device name; optional when exactly one "
+                                   "port is connected")]
 
 
 class Result(BaseModel):
@@ -182,7 +186,8 @@ def build_server(agent: DeckAgent) -> MCPServer:
 
     @tool("observe", title="Connect to a port", read_only=False, idempotent=True)
     async def serial_connect(
-        port: Annotated[str, Field(description="Device path or tcp://host:port / udp://host:port")],
+        port: Annotated[str, Field(description="Device path, tcp://host:port / udp://host:port / "
+                                   "unix:///socket, or a paired SSH device name")],
         baud: Annotated[int | None, Field(ge=9600, le=12000000, description=
                                           "Only used when the hub opens the port; a live channel keeps its baud")] = None,
         mode: Annotated[Literal["control", "raw"], Field(description=

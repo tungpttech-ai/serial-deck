@@ -18,8 +18,10 @@ from typing import Callable
 
 try:
     from . import runtime
+    from .uart_client import is_non_serial_port
 except ImportError:
     import runtime
+    from uart_client import is_non_serial_port
 
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -153,8 +155,8 @@ def esptool_args(port: str, build_dir: str, flash_baud: int = 3000000) -> list[s
 
 def flash_build(port: str, build_dir: str, flash_baud: int = 3000000,
                 output: Callable[[str], None] | None = None) -> int:
-    if port.startswith("hub://"):
-        raise ValueError("flash requires a physical UART, not a hub:// endpoint")
+    if port.startswith("hub://") or is_non_serial_port(port):
+        raise ValueError(f"flash requires a physical UART, not {port}")
     if runtime.frozen():  # no external esptool in a bundle
         return flash_build_in_process(port, build_dir, flash_baud, output)
     command = build_flash_command(port, build_dir, flash_baud)
@@ -189,8 +191,8 @@ def _import_esptool(build: Path):
 def flash_build_in_process(port: str, build_dir: str, flash_baud: int = 3000000,
                            output: Callable[[str], None] | None = None) -> int:
     """Run esptool inside the caller process so one hub process owns the UART."""
-    if port.startswith("hub://"):
-        raise ValueError("flash requires a physical UART, not a hub:// endpoint")
+    if port.startswith("hub://") or is_non_serial_port(port):
+        raise ValueError(f"flash requires a physical UART, not {port}")
     args = esptool_args(port, build_dir, flash_baud)
     esptool = _import_esptool(Path(build_dir).expanduser().resolve())
 
@@ -261,8 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     if "--self-test" in (sys.argv[1:] if argv is None else argv):
         return self_test()
     args = parser.parse_args(argv)
-    if args.port.startswith("hub://"):
-        print("flash requires a physical UART, not a hub:// endpoint", file=sys.stderr)
+    if args.port.startswith("hub://") or is_non_serial_port(args.port):
+        print(f"flash requires a physical UART, not {args.port}", file=sys.stderr)
         return 2
     try:
         command = build_flash_command(args.port, args.build_dir, args.baud)

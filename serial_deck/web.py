@@ -14,6 +14,7 @@ import mimetypes
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from . import mcp_status, runtime
+    from . import mcp_status, runtime, ssh_socket
     from .hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from .uart_client import (
@@ -41,7 +42,8 @@ try:
         FRAME_ERROR,
         discover_serial_ports,
         discover_serial_port_details,
-        is_network_port,
+        is_non_serial_port,
+        port_kind,
         open_uart_transport,
         UartReader,
         encode_json_frame,
@@ -52,6 +54,7 @@ try:
 except ImportError:
     import mcp_status
     import runtime
+    import ssh_socket
     from hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from uart_client import (
@@ -63,7 +66,8 @@ except ImportError:
         FRAME_ERROR,
         discover_serial_ports,
         discover_serial_port_details,
-        is_network_port,
+        is_non_serial_port,
+        port_kind,
         open_uart_transport,
         UartReader,
         encode_json_frame,
@@ -297,6 +301,7 @@ class DeckWebBridge:
         self.flash_id = 0
         self.flash_exit_code: int | None = None
         self.hub_state = "idle"
+        self.link: dict[str, Any] | None = None  # SSH tunnel state from the hub
         self._last_hub_flash_line: tuple[int, str] | None = None
         self.hub_manager = hub_manager
         self.hub_registry = hub_registry
@@ -355,9 +360,9 @@ class DeckWebBridge:
                 "flash_step": self.flash_step,
                 "hub_state": self.hub_state,
                 "console_mode": self.console_mode,
-                "transport_label": ("Control" if self.console_mode == "control" else "Linux") + " / "
-                                   + (self.port.split("://", 1)[0].upper()
-                                      if is_network_port(self.port) else "UART"),
+                "transport_label": transport_label(self.port, self.console_mode),
+                "port_kind": port_kind(self.port),
+                "link": self.link,
             }
 
     def list_ports(self) -> list[str]:
@@ -385,15 +390,18 @@ class DeckWebBridge:
                 self._registry_port = ""
 
     def connect(self, port: str, baud: int, mode: str | None = None,
-                on_baud_conflict: str = "join") -> dict[str, Any]:
+                on_baud_conflict: str = "join", passphrase: str = "") -> dict[str, Any]:
         if not port or port.startswith("hub://"):
-            raise ValueError("Select a physical UART or enter a tcp:// / udp:// endpoint")
+            raise ValueError("Select a serial port, an SSH device or a tcp:// / udp:// / unix:// endpoint")
         if mode is not None and mode not in CONSOLE_MODES:
             raise ValueError(f"unknown console mode: {mode}")
         if self.hub_registry is not None:
             if self.connected or self._owns_manager:
                 self.disconnect()
-            manager = self.hub_registry.acquire(port, baud, on_baud_conflict)
+            if passphrase:
+                manager = self.hub_registry.acquire(port, baud, on_baud_conflict, passphrase)
+            else:
+                manager = self.hub_registry.acquire(port, baud, on_baud_conflict)
             if self.hub_manager is not None:
                 self.hub_manager.unsubscribe(self._handle_hub_status)
             self.hub_manager = manager
@@ -407,7 +415,7 @@ class DeckWebBridge:
                 self._release_owned_manager()
                 raise
         elif self.hub_manager is not None:
-            self.hub_manager.claim_port(port, baud, on_baud_conflict)
+            self.hub_manager.claim_port(port, baud, on_baud_conflict, passphrase)
             baud = self.hub_manager.baud
         else:
             raise RuntimeError("UART hub is not configured")
@@ -431,8 +439,8 @@ class DeckWebBridge:
             self.connected = True
 
             try:
-                if is_network_port(port):
-                    raise OSError("no modem lines over the network")
+                if is_non_serial_port(port):
+                    raise OSError("no modem lines without a physical UART")
                 self.dtr_state, self.rts_state = self.transport.get_modem_lines()
             except Exception:
                 self.dtr_state, self.rts_state = None, None
@@ -682,7 +690,14 @@ class DeckWebBridge:
             return
         lost_while_connected = False
         retimed: tuple[int, int] | None = None
+        link = status.get("link")
+        link_changed = False
+        previous_link_state = None
         with self.lock:
+            link_changed = isinstance(link, dict) and link != self.link
+            if link_changed:
+                previous_link_state = (self.link or {}).get("state")
+            self.link = link if isinstance(link, dict) else None
             self.hub_state = str(status.get("state", "idle"))
             port = status.get("port")
             if isinstance(port, str):
@@ -720,12 +735,20 @@ class DeckWebBridge:
             })
             self.disconnect()
             return
-        if retimed is not None:
+        if retimed is not None and not is_non_serial_port(self.port):
             self.broadcast({
                 "type": "log",
                 "level": "warning",
                 "text": f"[hub] UART baud changed {retimed[0]} -> {retimed[1]}",
             })
+        if link_changed and isinstance(link, dict):
+            state = str(link.get("state", ""))
+            detail = str(link.get("detail", ""))
+            self.broadcast({"type": "log", "level": "info" if state == "connected" else "warning",
+                            "text": f"[ssh] {link.get('device', '')}: {state}"
+                                    + (f" ({detail})" if detail and state != "connected" else "")})
+            if state == "connected" and previous_link_state not in (None, "connected"):
+                self._send_hello()
         self.broadcast({
             "type": "flash",
             "text": line,
@@ -754,6 +777,26 @@ class DeckWebBridge:
         self.disconnect()
         if self.hub_manager is not None:
             self.hub_manager.unsubscribe()
+
+
+def transport_label(port: str, console_mode: str) -> str:
+    kind = port_kind(port)
+    if kind == "ssh-socket":
+        return "SSH / SOCKET"
+    device = "Control" if console_mode == "control" else "Linux"
+    return f"{device} / " + ("UART" if kind == "uart" else kind.upper())
+
+
+# SSH device actions the dashboard may call. Pairing and forgetting change the
+# remote host; the page confirms them in-page before posting.
+SSH_WEB_ACTIONS = {
+    "devices": "ssh_devices", "fingerprint": "ssh_fingerprint", "pair": "ssh_pair",
+    "forget": "ssh_forget", "retry": "ssh_retry", "unlock": "ssh_unlock",
+}
+# Actions that change a host or use a secret: page token required.
+SSH_BOARD_ACTIONS = ("pair", "forget", "unlock")
+SSH_PAIR_FIELDS = ("name", "host", "ssh_port", "user", "auth", "password", "passphrase", "key_passphrase",
+                   "key_path", "fingerprint", "replace_host_key", "remote_socket")
 
 
 class ConnectionManager:
@@ -989,6 +1032,9 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
     # Random per-process value the pywebview app uses to confirm it reached
     # its own server rather than some other listener on that port.
     instance_token = ""
+    # Per-backend secret embedded only in the served page; SSH actions that
+    # change a host or carry a secret require it in X-Deck-Action.
+    action_token = ""
 
     def _conn_id(self, query: dict[str, list[str]]) -> str:
         return query.get("id", [ConnectionManager.DEFAULT_ID])[0] or ConnectionManager.DEFAULT_ID
@@ -1025,10 +1071,13 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         if path == "/" or path == "/index.html":
+            page = HTML_PAGE.replace("__DECK_ACTION_TOKEN__", self.action_token)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            self.wfile.write(page.encode("utf-8"))
             return
 
         if path.startswith("/assets/"):
@@ -1166,9 +1215,14 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                 port = body.get("port", "").strip()
                 baud = int(body.get("baud", 2000000))
                 mode = body.get("mode")
+                passphrase = str(body.pop("passphrase", "") or "")
+                if passphrase and not self._action_token_ok():
+                    self._send_json({"ok": False, "error": "this action needs the dashboard page"},
+                                    status=HTTPStatus.FORBIDDEN)
+                    return
                 try:
                     status = bridge.connect(port, baud, str(mode) if mode else None,
-                                            str(body.get("on_baud_conflict", "join")))
+                                            str(body.get("on_baud_conflict", "join")), passphrase)
                 except BaudConflictError as exc:
                     self._send_json({"ok": False, "error": str(exc), "baud_conflict": {
                         "port": exc.port, "live_baud": exc.live_baud,
@@ -1176,6 +1230,10 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                     }}, status=HTTPStatus.CONFLICT)
                     return
                 self._send_json({"ok": True, "status": status})
+                return
+
+            if path.startswith("/api/ssh/"):
+                self._send_json(*self._ssh_request(path[len("/api/ssh/"):], body))
                 return
 
             if path == "/api/disconnect":
@@ -1244,7 +1302,46 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
 
             self.send_error(HTTPStatus.NOT_FOUND, f"Endpoint {path} not found")
         except Exception as exc:
-            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            # SSH link failures name their state for the fix button.
+            error = {"ok": False, "error": str(exc)}
+            if getattr(exc, "code", None):
+                error["code"] = exc.code
+            self._send_json(error, status=HTTPStatus.BAD_REQUEST)
+
+    def _action_token_ok(self) -> bool:
+        return secrets.compare_digest(self.headers.get("X-Deck-Action", ""), self.action_token or "\0")
+
+    def _ssh_request(self, name: str, body: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
+        action = SSH_WEB_ACTIONS.get(name)
+        if action is None:
+            return {"ok": False, "error": f"unknown SSH action: {name}"}, HTTPStatus.NOT_FOUND
+        if name in SSH_BOARD_ACTIONS and not self._action_token_ok():
+            for key in ("password", "passphrase", "key_passphrase"):
+                body.pop(key, None)
+            return {"ok": False, "error": "this action needs the dashboard page"}, HTTPStatus.FORBIDDEN
+        payload = {key: body[key] for key in SSH_PAIR_FIELDS + ("local_only",) if key in body}
+        if name in ("retry", "unlock", "forget") and "name" in body:
+            payload["name"] = body["name"]
+        manager = self.connections.hub_registry.default_manager
+        try:
+            if manager is None:
+                raise OSError("hub not started")
+            # Pairing waits on ssh (key install, a test connection through the tunnel).
+            result = manager.request_control(action, timeout=60.0, **payload)
+        except (OSError, RuntimeError) as exc:
+            if name == "devices":
+                # No hub yet: paired devices are still listed from the local store.
+                try:
+                    return {"ok": True, "supported": ssh_socket.supported(),
+                            "devices": ssh_socket.list_devices(ssh_socket.DeviceStore())}, HTTPStatus.OK
+                except OSError:
+                    pass
+            return {"ok": False, "error": str(exc), "code": getattr(exc, "code", "")}, HTTPStatus.OK
+        finally:
+            for key in ("password", "passphrase", "key_passphrase"):
+                payload.pop(key, None)
+                body.pop(key, None)
+        return result, HTTPStatus.OK
 
     def _read_json_body(self) -> dict[str, Any]:
         try:
@@ -1581,7 +1678,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <select id="portSelect" aria-label="Serial device" onchange="onPortSelectChange()" class="bg-transparent text-sm text-brand-text mono focus:outline-none cursor-pointer pr-2">
             <option value="">Scanning ports...</option>
           </select>
-          <input id="netPortInput" type="text" list="netPortHistory" autocomplete="off" spellcheck="false" placeholder="tcp://192.168.1.50:23" title="tcp://host:port (ser2net, ESP-Link, telnet console) or udp://host:port — udp://:5000 listens and replies to the last sender" class="hidden w-52 bg-brand-surface text-xs text-brand-text mono border border-brand-border rounded px-2 py-1 focus:outline-none focus:border-brand-accent">
+          <input id="netPortInput" type="text" list="netPortHistory" autocomplete="off" spellcheck="false" placeholder="tcp://192.168.1.50:23" title="tcp://host:port (ser2net, ESP-Link, telnet console), udp://host:port (udp://:5000 listens and replies to the last sender) or unix:///path/to.sock (a local stream socket)" class="hidden w-52 bg-brand-surface text-xs text-brand-text mono border border-brand-border rounded px-2 py-1 focus:outline-none focus:border-brand-accent">
           <datalist id="netPortHistory"></datalist>
           <button onclick="scanPorts()" title="Rescan Serial Ports" class="text-xs text-brand-muted hover:text-brand-accent px-1.5 py-0.5 rounded hover:bg-brand-border transition">
             <i class="fa-solid fa-rotate"></i>
@@ -1622,6 +1719,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div id="connectionStatus" class="flex items-center bg-brand-surfaceAlt border border-brand-border rounded-lg px-3 py-1.5 space-x-2 text-xs font-medium">
         <span id="connDot" class="w-2.5 h-2.5 rounded-full bg-brand-danger animate-pulse"></span>
         <span id="connLabel" class="mono text-brand-muted">Disconnected</span>
+        <button id="linkFixBtn" onclick="linkFix()" class="hidden ml-1 px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px] font-semibold"></button>
       </div>
     </div>
   </header>
@@ -1747,6 +1845,28 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
 
       <!-- FIRMWARE FLASH & SYMBOLS -->
+      <!-- SSH DEVICE: remote Unix socket over a hub-owned tunnel (replaces Reset/Bootloader/Flash) -->
+      <div id="sshPanel" class="glass-card p-4 flex-col hidden">
+        <div class="flex items-center space-x-2 pb-2 mb-3 border-b border-brand-border">
+          <i class="fa-solid fa-network-wired text-brand-accent"></i>
+          <h2 class="text-xs font-bold tracking-wider text-brand-text uppercase">SSH device</h2>
+        </div>
+        <div class="text-xs mono space-y-1 mb-3">
+          <div class="flex justify-between"><span class="text-brand-muted">Host</span><span id="sshHost">--</span></div>
+          <div class="flex justify-between"><span class="text-brand-muted">Socket</span><span id="sshSocket" class="truncate ml-2">--</span></div>
+          <div class="flex justify-between"><span class="text-brand-muted">Link</span><span id="sshLink">--</span></div>
+        </div>
+        <button onclick="sshForgetAsk()" class="w-full py-1.5 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-xs font-semibold transition"><i class="fa-solid fa-link-slash mr-1"></i>Forget device…</button>
+        <div id="sshConfirm" class="hidden mt-2 p-2 border border-brand-danger/50 bg-brand-danger/10 rounded text-xs">
+          <div id="sshConfirmText" class="font-semibold text-brand-text mb-2"></div>
+          <div class="flex justify-end space-x-2">
+            <button onclick="sshConfirmCancel()" class="px-2.5 py-1 border border-brand-border rounded">Cancel</button>
+            <button id="sshConfirmOk" class="px-2.5 py-1 rounded bg-brand-danger text-white font-bold">Forget</button>
+          </div>
+        </div>
+        <div class="mt-3 text-[10px] text-brand-muted">Reset, Bootloader and Flash need a physical UART.</div>
+      </div>
+
       <div id="flashPanel" class="glass-card p-4 flex flex-col">
         <div class="flex items-center justify-between pb-2 mb-3 border-b border-brand-border">
           <div class="flex items-center space-x-2">
@@ -2005,6 +2125,92 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </section>
 
+  <!-- SSH PAIRING WIZARD: host + login -> fingerprint -> checklist -->
+  <div id="pairModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="pairTitle">
+    <div class="glass-card w-full max-w-md max-h-full overflow-y-auto p-4 text-xs">
+      <div class="flex items-center justify-between pb-2 mb-3 border-b border-brand-border">
+        <h2 id="pairTitle" class="text-sm font-bold text-brand-text">Add SSH device</h2>
+        <span id="pairStepLabel" class="mono text-brand-muted">1/3</span>
+      </div>
+      <div id="pairStep1" class="space-y-2">
+        <label class="block"><span class="text-brand-muted font-semibold">Name</span>
+          <input id="pairName" maxlength="32" placeholder="lab-pi" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
+        <div class="flex space-x-2">
+          <label class="flex-1 block"><span class="text-brand-muted font-semibold">Host</span>
+            <input id="pairHost" placeholder="192.168.1.20" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
+          <label class="w-20 block"><span class="text-brand-muted font-semibold">Port</span>
+            <input id="pairPort" value="22" inputmode="numeric" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
+        </div>
+        <label class="block"><span class="text-brand-muted font-semibold">User</span>
+          <input id="pairUser" value="root" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
+        <label class="block"><span class="text-brand-muted font-semibold">Remote socket</span>
+          <input id="pairSocket" placeholder="/run/console.sock" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
+          <span class="block mt-1 text-[11px] text-brand-muted">Absolute path of the Unix stream socket on the host.</span></label>
+        <div><span class="text-brand-muted font-semibold">Sign in with</span>
+          <div class="mt-1 flex border border-brand-border rounded overflow-hidden w-max" role="group">
+            <button id="pairAuthPassword" onclick="pairAuth('password')" class="px-2.5 py-1 font-semibold">Password</button>
+            <button id="pairAuthKey" onclick="pairAuth('key')" class="px-2.5 py-1 font-semibold border-l border-brand-border">Existing SSH key</button>
+          </div></div>
+        <label id="pairPasswordRow" class="block"><span class="text-brand-muted font-semibold">Password</span>
+          <input id="pairPassword" type="password" autocomplete="off" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
+          <span class="block mt-1 text-[11px] text-brand-muted">Used once to install a dedicated Serial Deck key on the host. Never stored or logged.</span></label>
+        <div id="pairKeyRow" class="hidden space-y-2">
+          <label class="block"><span class="text-brand-muted font-semibold">Key path</span>
+            <input id="pairKeyPath" placeholder="~/.ssh/id_ed25519" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
+          <label class="block"><span class="text-brand-muted font-semibold">Passphrase (if any, not stored)</span>
+            <input id="pairPassphrase" type="password" autocomplete="off" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
+        </div>
+        <details class="pt-1"><summary class="cursor-pointer text-brand-muted font-semibold">Advanced</summary>
+          <div class="mt-2 space-y-2">
+            <label class="block"><span class="text-brand-muted">Passphrase for the device key (optional; asked on every connect, never stored)</span>
+              <input id="pairKeyPassphrase" type="password" autocomplete="new-password" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono"></label>
+          </div></details>
+      </div>
+      <div id="pairStep2" class="hidden space-y-2">
+        <p>First connection to <span id="pairTarget" class="mono"></span>. Compare this fingerprint with the host before trusting it:</p>
+        <div id="pairFingerprint" class="mono text-brand-accent bg-brand-surfaceAlt border border-brand-border rounded p-2 break-all"></div>
+        <div id="pairFingerprintWarn" class="hidden text-brand-danger font-semibold"></div>
+        <details><summary class="cursor-pointer text-brand-muted">How to read it on the host</summary>
+          <div class="mt-1 mono bg-brand-surfaceAlt border border-brand-border rounded p-2">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</div></details>
+      </div>
+      <div id="pairStep3" class="hidden space-y-1.5">
+        <ul id="pairChecklist" class="space-y-1"></ul>
+        <div id="pairError" class="hidden text-brand-danger font-semibold"></div>
+      </div>
+      <div class="flex justify-end space-x-2 pt-3 mt-3 border-t border-brand-border">
+        <button id="pairCancelBtn" onclick="pairClose()" class="px-3 py-1.5 border border-brand-border rounded">Cancel</button>
+        <button id="pairRejectBtn" onclick="pairClose()" class="hidden px-3 py-1.5 border border-brand-danger/60 text-brand-danger rounded">Does not match</button>
+        <button id="pairNextBtn" onclick="pairNext()" class="px-3 py-1.5 rounded bg-brand-accent text-brand-bg font-bold">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- KEY PASSPHRASE: one SSH connection, never stored -->
+  <div id="passphraseModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div class="glass-card w-full max-w-sm p-4 text-xs space-y-2">
+      <h2 class="text-sm font-bold text-brand-text">Passphrase for <span id="passphraseName"></span></h2>
+      <p class="text-brand-muted">The device key is protected. The passphrase is used for this SSH connection only; it is never stored or logged.</p>
+      <input id="passphraseInput" type="password" autocomplete="off" onkeydown="if (event.key === 'Enter') passphraseSubmit()" class="w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
+      <div class="flex justify-end space-x-2 pt-1">
+        <button onclick="passphraseClose()" class="px-3 py-1.5 border border-brand-border rounded">Cancel</button>
+        <button onclick="passphraseSubmit()" class="px-3 py-1.5 rounded bg-brand-accent text-brand-bg font-bold">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HOST KEY CHANGED: blocked until the user re-pairs on purpose -->
+  <div id="hostKeyModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div class="glass-card w-full max-w-md p-4 text-xs space-y-2">
+      <h2 class="text-sm font-bold text-brand-danger">The host key of <span id="hostKeyName"></span> changed</h2>
+      <p>The connection is blocked. Unless you reinstalled the host or replaced the machine, someone may be impersonating it.</p>
+      <div class="mono bg-brand-surfaceAlt border border-brand-border rounded p-2 break-all">Saved: <span id="hostKeySaved"></span><br>Now: <span id="hostKeyNow"></span></div>
+      <div class="flex justify-end space-x-2 pt-2">
+        <button onclick="document.getElementById('hostKeyModal').classList.add('hidden')" class="px-3 py-1.5 border border-brand-border rounded">Close</button>
+        <button onclick="hostKeyRepair()" class="px-3 py-1.5 rounded bg-brand-danger text-white font-bold">I reinstalled the host, pair again</button>
+      </div>
+    </div>
+  </div>
+
   <!-- JAVASCRIPT APP LOGIC -->
   <script>
     let activeTab = 'logs';
@@ -2073,6 +2279,10 @@ HTML_PAGE = """<!DOCTYPE html>
     // Hotkey listener
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (['pairModal', 'hostKeyModal', 'passphraseModal'].some(id => !document.getElementById(id).classList.contains('hidden'))) {
+        if (e.key === 'Escape') { pairClose(); passphraseClose(); document.getElementById('hostKeyModal').classList.add('hidden'); }
+        return;
+      }
       if (currentMode() === 'linux') return;
       const keyMap = {
         'ArrowUp': 'HOME', 'KeyW': 'HOME', 'w': 'HOME', 'W': 'HOME',
@@ -2261,8 +2471,16 @@ HTML_PAGE = """<!DOCTYPE html>
     let portScanId = 0;
     let portDetails = new Map();
 
+    const SSH_ADD_OPTION = '__ssh_add__';
+    let sshDevices = [];
+    let sshSupported = true;
+
     function isNetworkPort(port) {
-      return /^(tcp|udp):[/][/]/i.test(port || '');
+      return /^(tcp|udp|unix):[/][/]/i.test(port || '');
+    }
+
+    function isSshPort(port) {
+      return /^ssh-socket:[/][/]/.test(port || '');
     }
 
     function loadNetHistory() {
@@ -2286,6 +2504,14 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function onPortSelectChange() {
+      if (document.getElementById('portSelect').value === SSH_ADD_OPTION) {
+        const current = ensureConn(connId).status;
+        if (current.connected && current.port) showPortInPicker(current.port);
+        else document.getElementById('portSelect').value = '';
+        pairOpen();
+        return;
+      }
+      applyPortKindUi(selectedPort());
       const net = document.getElementById('portSelect').value === NET_OPTION;
       const input = document.getElementById('netPortInput');
       const picker = document.getElementById('portSelect');
@@ -2304,6 +2530,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function showPortInPicker(port) {
       const portSel = document.getElementById('portSelect');
+      if (isSshPort(port) && !Array.from(portSel.options).some(o => o.value === port)) {
+        portSel.add(new Option(port.slice('ssh-socket://'.length), port));
+      }
       if (isNetworkPort(port)) {
         portSel.value = NET_OPTION;
         document.getElementById('netPortInput').value = port;
@@ -2333,14 +2562,33 @@ HTML_PAGE = """<!DOCTYPE html>
         const previous = sel.value;
         portDetails = new Map((data.details || []).map(item => [item.device, item]));
         sel.replaceChildren();
+        // Grouped picker: USB (UART) / SSH devices / Network (raw).
+        const usb = document.createElement('optgroup');
+        usb.label = 'USB (UART)';
         for (const device of data.ports) {
           const opt = document.createElement('option');
           opt.value = device;
           opt.textContent = portDetails.get(device)?.label || device;
-          sel.appendChild(opt);
+          usb.appendChild(opt);
         }
-        if (!data.ports.length) sel.add(new Option('No accessible serial devices', ''));
-        sel.add(new Option('Network (TCP/UDP)…', NET_OPTION));
+        if (!data.ports.length) usb.appendChild(new Option('No accessible serial devices', ''));
+        sel.appendChild(usb);
+        await refreshSshDevices();
+        if (scanId !== portScanId) return;
+        if (sshSupported) {
+          const ssh = document.createElement('optgroup');
+          ssh.label = 'SSH devices';
+          for (const dev of sshDevices) {
+            const state = dev.link && dev.link.state ? ` · ${dev.link.state}` : '';
+            ssh.appendChild(new Option(`${dev.name} · ${dev.user}@${dev.host}${state}`, dev.port_url));
+          }
+          ssh.appendChild(new Option('+ Add SSH device…', SSH_ADD_OPTION));
+          sel.appendChild(ssh);
+        }
+        const net = document.createElement('optgroup');
+        net.label = 'Network (raw)';
+        net.appendChild(new Option('tcp:// · udp:// · unix://…', NET_OPTION));
+        sel.appendChild(net);
         const current = ensureConn(connId).status;
         if (current.connected && current.port) showPortInPicker(current.port);
         else if (Array.from(sel.options).some(o => o.value === previous)) sel.value = previous;
@@ -2355,11 +2603,13 @@ HTML_PAGE = """<!DOCTYPE html>
         if (scanId !== portScanId) return;
         sel.title = 'Port scan failed; use Rescan to retry.';
         if (!Array.from(sel.options).some(o => o.value === NET_OPTION)) {
-          sel.replaceChildren(new Option('Scan failed — retry', ''), new Option('Network (TCP/UDP)…', NET_OPTION));
+          sel.replaceChildren(new Option('Scan failed — retry', ''), new Option('tcp:// · udp:// · unix://…', NET_OPTION));
         }
         console.error('Scan ports error', err);
       }
     }
+
+    let connectPassphrase = '';
 
     async function toggleConnect() {
       const port = selectedPort();
@@ -2372,14 +2622,18 @@ HTML_PAGE = """<!DOCTYPE html>
           body: JSON.stringify({ id: connId })
         });
       } else {
-        if (!port) { alert('Select a serial port or enter a tcp:// / udp:// endpoint first.'); return; }
+        if (!port) { alert('Select a serial port, an SSH device, or enter a tcp:// / udp:// / unix:// endpoint first.'); return; }
         const connect = async (on_baud_conflict) => {
+          const body = { id: connId, port, baud, mode: document.getElementById('modeSelect').value,
+                         on_baud_conflict };
+          if (connectPassphrase) body.passphrase = connectPassphrase;
+          connectPassphrase = '';
           const res = await fetch('/api/connect', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: connId, port, baud, mode: document.getElementById('modeSelect').value,
-                                   on_baud_conflict })
+            headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
+            body: JSON.stringify(body)
           });
+          body.passphrase = '';
           return res.json();
         };
         let data = await connect('error');
@@ -2397,8 +2651,10 @@ HTML_PAGE = """<!DOCTYPE html>
             return;
           }
         }
-        if (!data.ok) alert(data.error || 'Connection failed');
-        else if (isNetworkPort(port)) rememberNetPort(port);
+        if (!data.ok) {
+          if (isSshPort(port) && data.code) showLinkProblem(port, data.code, data.error);
+          else alert(data.error || 'Connection failed');
+        } else if (isNetworkPort(port)) rememberNetPort(port);
       }
     }
 
@@ -3020,8 +3276,15 @@ HTML_PAGE = """<!DOCTYPE html>
           baudSelect.value = String(st.baud);
         }
         dot.className = "w-2.5 h-2.5 rounded-full bg-brand-success shadow-lg shadow-brand-success/50";
-        lbl.innerText = isNetworkPort(st.port) ? st.port : `${st.port} @ ${st.baud}`;
+        lbl.innerText = isNetworkPort(st.port) ? st.port : (isSshPort(st.port) ? st.port.slice('ssh-socket://'.length) : `${st.port} @ ${st.baud}`);
         lbl.className = "mono text-brand-success font-bold";
+        if (st.link) {
+          const link = st.link;
+          const ok = link.state === 'connected';
+          lbl.innerText = ok ? `${link.user}@${link.device} · SSH ✓` : `${link.device} · ${linkStateText(link.state)}`;
+          lbl.className = ok ? "mono text-brand-success font-bold" : "mono text-brand-warning font-bold";
+          if (!ok) dot.className = "w-2.5 h-2.5 rounded-full bg-brand-warning animate-pulse";
+        }
         btnText.innerText = "Disconnect";
         btn.className = "px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-danger hover:bg-brand-danger/80 text-white shadow";
       } else {
@@ -3032,6 +3295,8 @@ HTML_PAGE = """<!DOCTYPE html>
         btn.className = "px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-accent hover:bg-brand-accentHover text-brand-bg shadow";
       }
 
+      applyPortKindUi(connected ? st.port : selectedPort());
+      updateLinkFix(connected ? st : null);
       if (st.console_mode) applyModeUi(st.console_mode);
       if (st.fsm) {
         document.getElementById('fsmBadge').innerText = st.fsm;
@@ -3054,6 +3319,349 @@ HTML_PAGE = """<!DOCTYPE html>
       if (st.elf && !document.getElementById('elfPathInput').value) {
         document.getElementById('elfPathInput').value = st.elf;
       }
+    }
+
+    // ---------------- SSH devices (paired remote sockets) ----------------
+    const DECK_ACTION_TOKEN = '__DECK_ACTION_TOKEN__';
+    const LINK_TEXT = {
+      connecting: 'connecting…', connected: 'online', reconnecting: 'reconnecting…',
+      auth_failed: 'key rejected', host_key_changed: 'host key changed',
+      socket_missing: 'socket missing', unreachable: 'unreachable', closed: 'closed',
+      passphrase_required: 'passphrase needed',
+    };
+    const LINK_FIX = {
+      reconnecting: ['Retry now', () => sshPost('retry', { name: currentSshName() })],
+      unreachable: ['Retry now', () => sshPost('retry', { name: currentSshName() })],
+      socket_missing: ['Retry now', () => sshPost('retry', { name: currentSshName() })],
+      auth_failed: ['Pair again…', () => pairOpen(currentSshDevice())],
+      host_key_changed: ['Details', () => hostKeyShow(currentSshName())],
+      passphrase_required: ['Enter passphrase…', () => passphraseOpen(currentSshName(), 'unlock')],
+    };
+    let linkFixAction = null;
+
+    function linkStateText(state) { return LINK_TEXT[state] || state || ''; }
+
+    function currentSshName() {
+      const port = ensureConn(connId).status.port || selectedPort();
+      return isSshPort(port) ? port.slice('ssh-socket://'.length) : '';
+    }
+
+    function currentSshDevice() {
+      return sshDevices.find(d => d.name === currentSshName()) || null;
+    }
+
+    async function refreshSshDevices() {
+      try {
+        const data = await sshPost('devices', {}, true);
+        sshSupported = data.ok ? data.supported !== false : true;
+        sshDevices = data.ok ? (data.devices || []) : [];
+      } catch (err) { sshDevices = []; }
+      return sshDevices;
+    }
+
+    async function sshPost(action, body, quiet) {
+      const res = await fetch('/api/ssh/' + action, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
+        body: JSON.stringify(body || {})
+      });
+      const data = await res.json();
+      if (!quiet && !data.ok) appendLocalLog('warning', `[ssh] ${action}: ${data.error || 'failed'}`);
+      return data;
+    }
+
+    function appendLocalLog(level, text) {
+      handleStreamEvent(connId, { type: 'log', level, text, time: new Date().toTimeString().slice(0, 8) });
+    }
+
+    // Baud is UART-only; SSH devices get their own card instead of
+    // Reset/Bootloader/Flash, which need a physical UART.
+    function applyPortKindUi(port) {
+      const ssh = isSshPort(port);
+      const nonSerial = ssh || isNetworkPort(port);
+      const baud = document.getElementById('baudSelect');
+      baud.disabled = nonSerial;
+      baud.classList.toggle('opacity-40', nonSerial);
+      const panel = document.getElementById('sshPanel');
+      panel.classList.toggle('hidden', !ssh);
+      panel.classList.toggle('flex', ssh);
+      document.getElementById('flashPanel').classList.toggle('hidden', nonSerial);
+      document.querySelectorAll('#healthBar button').forEach(b => {
+        b.disabled = nonSerial;
+        b.classList.toggle('opacity-40', nonSerial);
+        b.title = nonSerial ? 'Needs a physical UART' : '';
+      });
+      if (ssh) {
+        const dev = sshDevices.find(d => d.port_url === port);
+        const st = ensureConn(connId).status;
+        document.getElementById('sshHost').innerText = dev ? `${dev.user}@${dev.host}` : '--';
+        document.getElementById('sshSocket').innerText = dev ? dev.remote_socket : '--';
+        document.getElementById('sshLink').innerText = st.link ? linkStateText(st.link.state) : '--';
+      }
+    }
+
+    function updateLinkFix(st) {
+      const btn = document.getElementById('linkFixBtn');
+      const link = st && st.link;
+      const fix = link && LINK_FIX[link.state];
+      linkFixAction = fix ? fix[1] : null;
+      btn.classList.toggle('hidden', !fix);
+      if (fix) { btn.innerText = fix[0]; btn.title = link.detail || ''; }
+    }
+
+    function linkFix() { if (linkFixAction) linkFixAction(); }
+
+    function showLinkProblem(port, code, error) {
+      const name = port.slice('ssh-socket://'.length);
+      if (code === 'host_key_changed') { hostKeyShow(name); return; }
+      if (code === 'auth_failed') {
+        if (confirm(`${name}: the host no longer accepts the Serial Deck key (removed, or the OS was reinstalled).\n\nPair again?`)) {
+          pairOpen(sshDevices.find(d => d.name === name));
+        }
+        return;
+      }
+      if (code === 'passphrase_required') { passphraseOpen(name, 'connect'); return; }
+      if (code === 'socket_missing') {
+        alert(`${name}: SSH works but the remote socket is not there.\n\n${error || ''}`);
+        return;
+      }
+      alert(error || `${name}: ${linkStateText(code)}`);
+    }
+
+    async function hostKeyShow(name) {
+      const dev = sshDevices.find(d => d.name === name) || {};
+      document.getElementById('hostKeyName').innerText = name;
+      document.getElementById('hostKeySaved').innerText = dev.fingerprint || '?';
+      document.getElementById('hostKeyNow').innerText = '…';
+      document.getElementById('hostKeyModal').classList.remove('hidden');
+      const fp = await sshPost('fingerprint', { host: dev.host, ssh_port: dev.port || 22 }, true);
+      document.getElementById('hostKeyNow').innerText = fp.ok ? fp.fingerprint : (fp.error || '?');
+    }
+
+    function hostKeyRepair() {
+      document.getElementById('hostKeyModal').classList.add('hidden');
+      pairOpen(currentSshDevice() || sshDevices.find(d => d.name === document.getElementById('hostKeyName').innerText), true);
+    }
+
+    // Wizard: 1 host + login, 2 fingerprint (TOFU), 3 checklist.
+    let pairState = { step: 1, auth: 'password', fingerprint: '', replace: false, busy: false };
+
+    function pairAuth(mode) {
+      pairState.auth = mode;
+      document.getElementById('pairPasswordRow').classList.toggle('hidden', mode !== 'password');
+      document.getElementById('pairKeyRow').classList.toggle('hidden', mode !== 'key');
+      for (const [id, m] of [['pairAuthPassword', 'password'], ['pairAuthKey', 'key']]) {
+        const el = document.getElementById(id);
+        el.className = 'px-2.5 py-1 font-semibold ' + (m === 'key' ? 'border-l border-brand-border ' : '')
+          + (mode === m ? 'bg-brand-accent text-brand-bg' : 'bg-brand-surfaceAlt text-brand-text');
+      }
+    }
+
+    function pairOpen(device, replaceHostKey) {
+      pairState = { step: 1, auth: 'password', fingerprint: '', replace: !!replaceHostKey, busy: false };
+      const set = (id, value) => { document.getElementById(id).value = value; };
+      set('pairName', device ? device.name : '');
+      set('pairHost', device ? device.host : '');
+      set('pairPort', device ? String(device.port || 22) : '22');
+      set('pairUser', device ? device.user : 'root');
+      set('pairSocket', device ? device.remote_socket : '');
+      set('pairPassword', '');
+      set('pairPassphrase', '');
+      set('pairKeyPath', '');
+      pairAuth('password');
+      pairShowStep(1);
+      document.getElementById('pairModal').classList.remove('hidden');
+      document.getElementById('pairName').focus();
+    }
+
+    function pairClose() {
+      document.getElementById('pairPassword').value = '';
+      document.getElementById('pairPassphrase').value = '';
+      document.getElementById('pairKeyPassphrase').value = '';
+      document.getElementById('pairModal').classList.add('hidden');
+    }
+
+    function pairShowStep(step) {
+      pairState.step = step;
+      for (const n of [1, 2, 3]) document.getElementById('pairStep' + n).classList.toggle('hidden', n !== step);
+      document.getElementById('pairStepLabel').innerText = `${step}/3`;
+      document.getElementById('pairRejectBtn').classList.toggle('hidden', step !== 2);
+      const next = document.getElementById('pairNextBtn');
+      next.innerText = step === 2 ? 'Matches, trust it' : (step === 3 ? 'Connect' : 'Continue');
+      next.disabled = false;
+      document.getElementById('pairCancelBtn').innerText = step === 3 ? 'Close' : 'Cancel';
+    }
+
+    function pairFields() {
+      const val = id => document.getElementById(id).value.trim();
+      return {
+        name: val('pairName'), host: val('pairHost'), ssh_port: parseInt(val('pairPort') || '22', 10),
+        user: val('pairUser') || 'root', remote_socket: val('pairSocket'),
+      };
+    }
+
+    function pairCheck(items) {
+      const ul = document.getElementById('pairChecklist');
+      ul.replaceChildren(...items.map(([ok, text]) => {
+        const li = document.createElement('li');
+        li.className = ok === true ? 'text-brand-success' : (ok === false ? 'text-brand-danger' : 'text-brand-muted');
+        li.innerText = `${ok === true ? '✓' : (ok === false ? '✗' : '·')} ${text}`;
+        return li;
+      }));
+    }
+
+    async function pairNext() {
+      if (pairState.busy) return;
+      const next = document.getElementById('pairNextBtn');
+      const fields = pairFields();
+      pairState.busy = true;
+      next.disabled = true;
+      try {
+        if (pairState.step === 1) {
+          if (!fields.name || !fields.host || !fields.remote_socket) { alert('Enter a name, host and remote socket path.'); return; }
+          const fp = await sshPost('fingerprint', { host: fields.host, ssh_port: fields.ssh_port }, true);
+          if (!fp.ok) { alert(fp.error || 'Could not read the host fingerprint'); return; }
+          pairState.fingerprint = fp.fingerprint;
+          document.getElementById('pairTarget').innerText = `${fields.user}@${fields.host}`;
+          document.getElementById('pairFingerprint').innerText = `${(fp.type || '').replace('ssh-', '').toUpperCase()}  ${fp.fingerprint}`;
+          const warn = document.getElementById('pairFingerprintWarn');
+          warn.classList.toggle('hidden', !fp.changed);
+          warn.innerText = fp.changed ? `Different from the saved key (${(fp.pinned || [])[0] || ''}). Continue only if the host was just reinstalled.` : '';
+          if (fp.changed && !pairState.replace) {
+            if (!confirm('The fingerprint differs from the last pairing. Are you sure the host was reinstalled?')) return;
+            pairState.replace = true;
+          }
+          pairShowStep(2);
+          return;
+        }
+        if (pairState.step === 2) {
+          pairShowStep(3);
+          document.getElementById('pairNextBtn').disabled = true;
+          document.getElementById('pairError').classList.add('hidden');
+          pairCheck([[null, 'Trust the host key'], [null, 'Create a key for this device'],
+                     [null, 'Install the restricted key on the host'], [null, 'Sign in with the key only'],
+                     [null, 'Open the remote socket']]);
+          const body = { ...fields, auth: pairState.auth, fingerprint: pairState.fingerprint,
+                         replace_host_key: pairState.replace };
+          if (pairState.auth === 'password') body.password = document.getElementById('pairPassword').value;
+          else {
+            body.key_path = document.getElementById('pairKeyPath').value.trim();
+            const passphrase = document.getElementById('pairPassphrase').value;
+            if (passphrase) body.passphrase = passphrase;
+          }
+          const keyPassphrase = document.getElementById('pairKeyPassphrase').value;
+          if (keyPassphrase) body.key_passphrase = keyPassphrase;
+          document.getElementById('pairPassword').value = '';
+          document.getElementById('pairPassphrase').value = '';
+          document.getElementById('pairKeyPassphrase').value = '';
+          const res = await sshPost('pair', body, true);
+          body.password = body.passphrase = body.key_passphrase = '';
+          if (!res.ok) {
+            pairCheck([[false, res.error || 'Pairing failed']]);
+            const err = document.getElementById('pairError');
+            err.classList.remove('hidden');
+            err.innerText = res.code === 'auth_failed' ? 'The password or key was rejected.' :
+                            (res.code === 'host_key_changed' ? 'The host key changed midway; stopped.' : (res.code || ''));
+            pairState.step = 2;
+            document.getElementById('pairNextBtn').disabled = false;
+            document.getElementById('pairNextBtn').innerText = 'Try again';
+            return;
+          }
+          pairCheck(res.steps.map(step => [true, {
+            host_key: `Trusted host key ${step.fingerprint || ''}`,
+            generate_key: `Created device key ${step.key || ''}`,
+            install_key: `Installed a restricted key (tunnels and fixed verbs only) → ${step.target || ''}`,
+            batch_login: 'Signed in with the key, password forgotten',
+            connect: `Opened remote socket ${step.socket || ''}`,
+          }[step.step] || step.step]));
+          pairState.portUrl = res.port_url;
+          document.getElementById('pairNextBtn').disabled = false;
+          await scanPorts();
+          return;
+        }
+        if (pairState.step === 3 && pairState.portUrl) {
+          pairClose();
+          showPortInPicker(pairState.portUrl);
+          toggleConnect();
+        }
+      } finally {
+        pairState.busy = false;
+        if (pairState.step !== 3 || pairState.portUrl) next.disabled = false;
+      }
+    }
+
+    // Key passphrase: asked for each SSH connection, sent once, never stored.
+    let passphraseTarget = { name: '', mode: 'connect' };
+
+    function passphraseOpen(name, mode) {
+      passphraseTarget = { name, mode };
+      document.getElementById('passphraseName').innerText = name;
+      document.getElementById('passphraseInput').value = '';
+      document.getElementById('passphraseModal').classList.remove('hidden');
+      document.getElementById('passphraseInput').focus();
+    }
+
+    function passphraseClose() {
+      document.getElementById('passphraseInput').value = '';
+      document.getElementById('passphraseModal').classList.add('hidden');
+    }
+
+    async function passphraseSubmit() {
+      const value = document.getElementById('passphraseInput').value;
+      passphraseClose();
+      if (!value) return;
+      if (passphraseTarget.mode === 'forget') {
+        sshForgetRun(passphraseTarget.name, false, value);
+        return;
+      }
+      if (passphraseTarget.mode === 'unlock') {
+        const res = await sshPost('unlock', { name: passphraseTarget.name, passphrase: value });
+        if (!res.ok && res.code === 'passphrase_required') passphraseOpen(passphraseTarget.name, 'unlock');
+        return;
+      }
+      connectPassphrase = value;
+      showPortInPicker('ssh-socket://' + passphraseTarget.name);
+      toggleConnect();
+    }
+
+    // Forget: removes this device's key line on the host, the local key and profile.
+    function sshForgetAsk() {
+      const name = currentSshName();
+      if (!name) return;
+      document.getElementById('sshConfirmText').innerText =
+        `Forget ${name}? Its Serial Deck key is removed from the host and the profile from this machine.`;
+      document.getElementById('sshConfirmOk').onclick = () => sshForgetRun(name);
+      document.getElementById('sshConfirm').classList.remove('hidden');
+    }
+
+    function sshConfirmCancel() { document.getElementById('sshConfirm').classList.add('hidden'); }
+
+    async function sshForgetRun(name, localOnly, passphrase) {
+      sshConfirmCancel();
+      if (ensureConn(connId).status.connected) await toggleConnect();
+      // The hub reaps the channel 5 s after its last client left.
+      let res = { ok: false };
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const body = localOnly ? { name, local_only: true } : { name };
+        if (passphrase && !localOnly) body.passphrase = passphrase;
+        res = await sshPost('forget', body, true);
+        body.passphrase = '';
+        if (res.ok || !/disconnect the device/.test(res.error || '')) break;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      if (!res.ok && res.code === 'passphrase_required' && !localOnly) {
+        passphraseOpen(name, 'forget');
+        return;
+      }
+      if (!res.ok && !localOnly) {
+        if (confirm(`${res.error || 'Could not remove the key from the host.'}\n\nForget on this machine only? The key line stays in the host's authorized_keys.`)) {
+          return sshForgetRun(name, true);
+        }
+        return;
+      }
+      appendLocalLog(res.ok ? 'info' : 'warning', res.ok
+        ? `[ssh] ${name}: forgotten${res.removed_remote_key ? ' (key removed from the host)' : ''}${res.warning ? ' · ' + res.warning : ''}`
+        : `[ssh] ${name}: ${res.error}`);
+      await scanPorts();
     }
 
     // ---------------- MCP page ----------------
@@ -3288,6 +3896,7 @@ class WebBackend:
         self.handler = type("DeckBackendHttpHandler", (DeckHttpHandler,), {})
         self.instance_token = uuid.uuid4().hex
         self.handler.instance_token = self.instance_token
+        self.handler.action_token = secrets.token_urlsafe(32)
         # Bind the web port before spawning the hub so a busy port does not
         # leave an orphaned hub process behind.
         self.server = bind_web_server(host, port_web, handler=self.handler)

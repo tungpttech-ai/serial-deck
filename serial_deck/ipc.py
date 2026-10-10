@@ -21,6 +21,7 @@ import secrets
 import select
 import socket
 import stat
+import struct
 import sys
 import threading
 import time
@@ -285,6 +286,9 @@ class Listener:
                               f"limit: {path}; use a shorter --socket or SERIAL_DECK_IPC=tcp")
             remove(path)
             self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            # The parent directory is private (0700, see private_dir), so the
+            # brief window before chmod is closed to other users. No umask
+            # change: it is process-wide and would race other threads' mkdirs.
             try:
                 self._socket.bind(path)
                 os.chmod(path, 0o600)
@@ -322,7 +326,11 @@ class Listener:
 
     def accept(self) -> tuple[socket.socket, object]:
         if BACKEND == "unix":
-            return self._socket.accept()
+            while True:
+                client, address = self._socket.accept()
+                if same_user(client):
+                    return client, address
+                client.close()  # another user's process: never reaches the hub
         deadline = None if self._timeout is None else time.monotonic() + self._timeout
         while True:
             if self._closed:
@@ -412,6 +420,23 @@ class Listener:
             else:
                 remove(self.path)
 
+
+def same_user(client: socket.socket) -> bool:
+    """Only this user's processes may talk to the hub (SO_PEERCRED).
+
+    The 0600 socket already keeps other users out; this also covers a socket
+    whose directory permissions were loosened. Where the kernel offers no
+    SO_PEERCRED (macOS), the 0600 mode and private directory remain the guard.
+    """
+    option = getattr(socket, "SO_PEERCRED", None)
+    if option is None or os.name != "posix":
+        return True
+    try:
+        creds = client.getsockopt(socket.SOL_SOCKET, option, struct.calcsize("3i"))
+    except OSError:
+        return False
+    _pid, uid, _gid = struct.unpack("3i", creds)
+    return uid == os.getuid()
 
 def listen(path: str | Path, backlog: int = 8) -> Listener:
     return Listener(str(path), backlog)

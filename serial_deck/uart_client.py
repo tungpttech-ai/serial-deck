@@ -405,11 +405,35 @@ class SerialTransport:
 
 
 NETWORK_SCHEMES = ("tcp", "udp")
+# Device endpoints without a physical UART: no baud, DTR/RTS, BREAK, reset,
+# bootloader or flashing. `unix:///path` is a local stream socket;
+# `ssh-socket://name` is a paired remote socket behind a hub-managed SSH
+# tunnel (ssh_socket.py). Hub channels use `hub://`, never `unix://`.
+NON_SERIAL_SCHEMES = (*NETWORK_SCHEMES, "unix", "ssh-socket")
+UNIX_PATH_MAX = 103
 
 
 def is_network_port(port: str) -> bool:
     """True for `tcp://host:port` / `udp://host:port` UART-over-IP endpoints."""
     return port.split("://", 1)[0].lower() in NETWORK_SCHEMES and "://" in port
+
+
+def is_non_serial_port(port: str) -> bool:
+    """True for every device endpoint that is not a physical UART."""
+    return isinstance(port, str) and "://" in port and port.split("://", 1)[0].lower() in NON_SERIAL_SCHEMES
+
+
+def port_kind(port: str) -> str:
+    """`uart`, or the scheme of a non-serial endpoint (`tcp`, `udp`, `unix`, `ssh-socket`)."""
+    return port.split("://", 1)[0].lower() if is_non_serial_port(port) else "uart"
+
+
+def parse_unix_port(port: str) -> str:
+    """`unix:///abs/path` -> `/abs/path` of a device stream socket."""
+    path = port[7:] if port.startswith("unix://") else ""
+    if not path.startswith("/") or len(path.encode()) > UNIX_PATH_MAX or "\0" in path:
+        raise ValueError(f"unix:// endpoint needs an absolute socket path, e.g. unix:///run/x.sock: {port}")
+    return path
 
 
 HUB_SCHEME = "hub://"
@@ -458,18 +482,32 @@ def parse_network_port(port: str) -> tuple[str, str, int, int]:
 
 
 class NetworkTransport:
-    """UART-over-IP transport (ser2net, ESP-Link, WiFi-UART modules, telnet consoles).
+    """UART-over-IP transport (ser2net, ESP-Link, WiFi-UART modules, telnet
+    consoles) and local device stream sockets (`unix:///path`).
 
     Presents the same read/write surface as `SerialTransport`; modem lines,
     BREAK, reset and flashing need a physical UART and raise instead.
     """
 
     def __init__(self, port: str, timeout: float, connect_timeout: float = 5.0) -> None:
-        scheme, host, remote_port, local_port = parse_network_port(port)
-        self.scheme = scheme
         self._timeout = timeout
         self._peer: tuple[str, int] | None = None
         self._listen = False
+        if port.startswith("unix://"):
+            self.scheme = "unix"
+            if not hasattr(socket, "AF_UNIX"):
+                raise OSError("unix:// endpoints need Unix sockets, which this platform's Python lacks")
+            self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._socket.settimeout(connect_timeout)
+            try:
+                self._socket.connect(parse_unix_port(port))
+            except OSError:
+                self._socket.close()
+                raise
+            self._socket.settimeout(timeout)
+            return
+        scheme, host, remote_port, local_port = parse_network_port(port)
+        self.scheme = scheme
         if scheme == "tcp":
             self._socket = socket.create_connection((host, remote_port), timeout=connect_timeout)
             self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -486,7 +524,7 @@ class NetworkTransport:
         self._socket.settimeout(timeout)
 
     def write(self, frame: bytes) -> None:
-        if self.scheme == "tcp":
+        if self.scheme in ("tcp", "unix"):
             self._socket.sendall(frame)
             return
         if self._peer is None:
@@ -497,10 +535,10 @@ class NetworkTransport:
 
     def read(self, size: int = 4096) -> bytes:
         try:
-            if self.scheme == "tcp":
+            if self.scheme in ("tcp", "unix"):
                 data = self._socket.recv(size)
                 if not data:
-                    raise OSError("TCP peer closed the connection")
+                    raise OSError(f"{self.scheme.upper()} peer closed the connection")
                 return data
             data, peer = self._socket.recvfrom(65535)
         except socket.timeout:
@@ -535,9 +573,16 @@ class NetworkTransport:
         self._socket.close()
 
 
-def open_device_transport(port: str, baud: int, timeout: float) -> SerialTransport | NetworkTransport:
-    """Open the device side of a connection: a serial path or a tcp/udp endpoint."""
-    if is_network_port(port):
+def open_device_transport(port: str, baud: int, timeout: float) -> Any:
+    """Open the device side of a connection: a serial path, a tcp/udp/unix
+    endpoint or a paired SSH device (`ssh-socket://name`)."""
+    if port.startswith("ssh-socket://"):
+        try:
+            from .ssh_socket import SshSocketTransport
+        except ImportError:
+            from ssh_socket import SshSocketTransport
+        return SshSocketTransport(port, timeout)
+    if is_non_serial_port(port):
         return NetworkTransport(port, timeout)
     return SerialTransport(port, baud, timeout)
 

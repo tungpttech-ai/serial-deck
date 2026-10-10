@@ -13,6 +13,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from serial_deck.hub_client import HubProcessManager
 from serial_deck.uart_client import open_uart_transport
@@ -61,6 +62,11 @@ class PortableDaemonTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         runtime = Path(self.temp.name) / "rt"
         self.env = {**os.environ, "SERIAL_DECK_RUNTIME_DIR": str(runtime)}
+        # The manager looks for a running hub through the runtime dir too: without
+        # this it attaches to the user's real hub instead of starting its own.
+        isolated = patch.dict(os.environ, {"SERIAL_DECK_RUNTIME_DIR": str(runtime)})
+        isolated.start()
+        self.addCleanup(isolated.stop)
         self.path = str(runtime / "hub.sock")
         self.bridge = FakeBridge()
         self.addCleanup(self.bridge.close)

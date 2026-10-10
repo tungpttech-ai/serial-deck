@@ -89,8 +89,8 @@ connected, `port` may be omitted.
 | Tool | Main arguments | Result |
 |---|---|---|
 | `serial_status` | – | Hub (pid, channels, flash state, `features`), policy, sessions, flash jobs, `tx_atomic` |
-| `serial_list_ports` | – | Ports with product/interface names, USB `vid:pid`/serial, whether the hub has a channel. Opens nothing |
-| `serial_connect` | `port`, `baud?`, `mode=control\|raw`, `change_live_baud=false` | Attach through the hub. `control` sends HELLO; `raw` only reads logs |
+| `serial_list_ports` | – | Ports with product/interface names, USB `vid:pid`/serial, whether the hub has a channel; paired SSH devices under `ssh_devices` (name, host, remote socket, link state). Opens nothing |
+| `serial_connect` | `port`, `baud?`, `mode=control\|raw`, `change_live_baud=false` | Attach through the hub. `port` may also be `tcp://`, `udp://`, `unix:///path` or the name of a paired SSH device. `control` sends HELLO; `raw` only reads logs |
 | `serial_disconnect` | `port?` | Detach this server only; dashboards keep streaming |
 | `serial_hello` | `timeout_s` | The firmware's HELLO: transport, baud, commands |
 | `serial_query` | `kind=capabilities\|identity\|fsm\|snapshot`, `redact_identity=true` | Full lifecycle `accepted → running → succeeded` and `result` |
@@ -108,6 +108,15 @@ connected, `port` may be omitted.
 `serial_query`, `serial_button`, `serial_show_info` and `serial_hello` need
 firmware that implements the [control protocol](PROTOCOL.md). Everything else
 works with any serial device.
+
+## SSH devices
+
+A remote Unix socket paired in the dashboard appears in `serial_list_ports`
+under `ssh_devices`; pass its name to any tool that takes a `port`. These
+devices have no reset, bootloader or flash (those tools answer `invalid_state`).
+Pairing needs the user's password, so it is only done in the dashboard, never
+through MCP. A device whose link is down refuses writes (`nothing was sent`);
+read the `link_state` in `serial_list_ports` before retrying.
 
 ## Typical flows
 

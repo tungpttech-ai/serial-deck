@@ -13,11 +13,11 @@ from tkinter import messagebox
 try:
     from .desktop import ControlDeck
     from .hub_client import DEFAULT_SOCKET, BaudConflictError, HubProcessManager
-    from .uart_client import is_network_port
+    from .uart_client import is_non_serial_port
 except ImportError:
     from desktop import ControlDeck
     from hub_client import DEFAULT_SOCKET, BaudConflictError, HubProcessManager
-    from uart_client import is_network_port
+    from uart_client import is_non_serial_port
 
 
 class HubControlDeck(ControlDeck):
@@ -66,7 +66,7 @@ class HubControlDeck(ControlDeck):
         # UART-over-IP endpoints can be typed next to the scanned devices.
         selected = self.port_var.get().strip()
         values = list(physical_ports)
-        if is_network_port(selected):
+        if is_non_serial_port(selected):
             values.append(selected)
         self.port_combo.configure(values=tuple(values), state="normal")
         if selected not in values:
@@ -85,7 +85,8 @@ class HubControlDeck(ControlDeck):
         port = self.port_var.get().strip()
         if not port or port.startswith("hub://"):
             messagebox.showwarning(
-                "UART port", "Select a physical UART or type tcp://host:port / udp://host:port.")
+                "UART port", "Select a physical UART or type tcp://host:port / udp://host:port / "
+                "unix:///path / ssh-socket://name.")
             return
         try:
             baud = int(self.baud_var.get())

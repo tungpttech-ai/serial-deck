@@ -30,7 +30,9 @@ policy to get around a decision.
 1. Check `serial_status` (or `serial-deck-hub --status`) before starting
    anything. Reuse the running hub and its channels; never start a second hub.
 2. Identify the device by USB identity (`serial_list_ports`), not by its port
-   number. Port names change after replug or reset.
+   number. Port names change after replug or reset. Paired SSH devices are
+   listed under `ssh_devices`; connect with their name. They have no reset,
+   bootloader or flash, and pairing is dashboard-only.
 3. Keep a shared port's live baud. Retiming (`change_live_baud=true`) changes it
    for every client: ask the user first, and use the baud the firmware needs.
 4. On `outcome: "unknown"`, do not resend. Inspect state with logs or a query

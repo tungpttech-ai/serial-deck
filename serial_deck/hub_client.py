@@ -23,6 +23,9 @@ except ImportError:
     import runtime
     from uart_client import HUB_SCHEME, is_device_port, port_identity
 
+# Control actions served by the daemon's root socket, never by a channel.
+ROOT_ACTIONS = ("claim", "scan", "shutdown", "ssh_devices", "ssh_fingerprint", "ssh_pair",
+                "ssh_forget", "ssh_retry", "ssh_unlock")
 MULTIPORT_PROTOCOL = "serial-deck-multiport-v1"
 DEFAULT_SOCKET = ipc.default_hub_path()
 
@@ -145,7 +148,7 @@ class HubProcessManager:
 
     def request_control(self, action: str, timeout: float = 3.0,
                         **payload: object) -> dict[str, object]:
-        endpoint = (f"{self.socket_path}.ctl" if action in ("claim", "scan", "shutdown")
+        endpoint = (f"{self.socket_path}.ctl" if action in ROOT_ACTIONS
                     else self.control_endpoint)
         client = ipc.connect(endpoint, timeout)
         try:
@@ -166,7 +169,10 @@ class HubProcessManager:
             conflict = response.get("baud_conflict")
             if isinstance(conflict, dict):
                 raise BaudConflictError(str(response.get("error", "baud conflict")), conflict)
-            raise RuntimeError(str(response.get("error", "UART hub request failed")))
+            error = RuntimeError(str(response.get("error", "UART hub request failed")))
+            if response.get("code"):
+                error.code = str(response["code"])  # type: ignore[attr-defined]
+            raise error
         if response.get("protocol") == MULTIPORT_PROTOCOL:
             self.multiport = True
         return response
@@ -183,13 +189,17 @@ class HubProcessManager:
             self.hub_port = hub_port or ""
         return ports
 
-    def claim_port(self, port: str, baud: int, on_baud_conflict: str = "join") -> None:
+    def claim_port(self, port: str, baud: int, on_baud_conflict: str = "join",
+                   passphrase: str = "") -> None:
         """`on_baud_conflict` decides a claim at another live baud: "join" keeps
         the live baud, "error" raises BaudConflictError, "retime" changes it for
         every attached client."""
         payload: dict[str, object] = {"port": port, "baud": baud}
         if on_baud_conflict != "join":
             payload["on_baud_conflict"] = on_baud_conflict
+        if passphrase:
+            # One-shot key passphrase for a protected ssh-socket:// device key.
+            payload["passphrase"] = passphrase
         response = self.request_control("claim", **payload)
         claimed = response.get("claimed", False)
         if not isinstance(claimed, bool):
@@ -442,7 +452,8 @@ class HubRegistry:
             _, refcount = self._entries.get(port, (None, 0))
             self._entries[port] = (manager, refcount + 1)
 
-    def acquire(self, port: str, baud: int, on_baud_conflict: str = "join") -> HubProcessManager:
+    def acquire(self, port: str, baud: int, on_baud_conflict: str = "join",
+                passphrase: str = "") -> HubProcessManager:
         key = port_identity(port)
         with self._lock:
             manager, refcount = self._entries.get(key, (None, 0))
@@ -476,7 +487,9 @@ class HubRegistry:
             elif self.reuse_live_baud and on_baud_conflict == "join":
                 baud = manager.baud
             try:
-                if on_baud_conflict == "join":
+                if passphrase:
+                    manager.claim_port(port, baud, on_baud_conflict, passphrase)
+                elif on_baud_conflict == "join":
                     manager.claim_port(port, baud)
                 else:
                     manager.claim_port(port, baud, on_baud_conflict)

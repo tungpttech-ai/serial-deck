@@ -20,14 +20,14 @@ try:
     from .flash import build_flash_command, flash_build_in_process
     from .uart_client import (
         MAX_ENCODED_FRAME, NetworkTransport, SerialTransport, discover_serial_ports,
-        is_device_port, is_network_port, open_device_transport, port_identity)
+        is_device_port, is_non_serial_port, open_device_transport, port_identity)
 except ImportError:
     import ipc
     import runtime
     from flash import build_flash_command, flash_build_in_process
     from uart_client import (
         MAX_ENCODED_FRAME, NetworkTransport, SerialTransport, discover_serial_ports,
-        is_device_port, is_network_port, open_device_transport, port_identity)
+        is_device_port, is_non_serial_port, open_device_transport, port_identity)
 
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -69,6 +69,8 @@ class UartHub:
         self.flash_exit_code: int | None = None
         self.flash_error = ""
         self.stop = threading.Event()
+        # Transport opened by the service before a claim (slow links such as SSH).
+        self.preopened: object | None = None
 
     def start(self) -> None:
         ipc.private_dir(self.socket_path.parent)
@@ -105,6 +107,8 @@ class UartHub:
             revision = self.revision
             flashing = self.flashing
         ready = self.serial is not None
+        link_state = getattr(self.serial, "link_state", None)
+        link = link_state() if callable(link_state) else None
         return {
             "ok": True,
             "event": "status",
@@ -115,6 +119,7 @@ class UartHub:
             "client_count": client_count,
             "flash": flash,
             "features": list(HUB_FEATURES),
+            **({"link": link} if link is not None else {}),
         }
 
     def _publish_status(self) -> None:
@@ -155,7 +160,7 @@ class UartHub:
         with self.serial_lock:
             if self.serial is None:
                 raise RuntimeError("UART hub has no claimed port")
-            if is_network_port(self.port):
+            if is_non_serial_port(self.port):
                 raise RuntimeError(f"flash needs a physical UART, not {self.port}")
             serial = self.serial
             self.serial = None
@@ -247,6 +252,8 @@ class UartHub:
                     if flashing:
                         continue
                     raise OSError("UART hub has no claimed port")
+                if getattr(serial, "available", True) is False:
+                    continue  # link reconnecting: drop raw input, keep the client
                 try:
                     with self.serial_read_lock:
                         serial.write(data)
@@ -311,7 +318,7 @@ class UartHub:
                     if self.serial is None:
                         raise RuntimeError("UART hub has no claimed port")
                     port = self.port
-                if is_network_port(port):
+                if is_non_serial_port(port):
                     raise RuntimeError(f"flash needs a physical UART, not {port}")
                 response = {
                     "ok": True,
@@ -332,7 +339,7 @@ class UartHub:
                     if self.serial is None:
                         raise RuntimeError("UART hub has no claimed port")
                     port = self.port
-                if is_network_port(port):
+                if is_non_serial_port(port):
                     raise RuntimeError(f"flash needs a physical UART, not {port}")
                 command = build_flash_command(port, build_dir, flash_baud)
                 with self.status_lock:
@@ -366,8 +373,9 @@ class UartHub:
                         port = request.get("port")
                         baud = request.get("baud", self.baud)
                         if not isinstance(port, str) or not (
-                                is_device_port(port) or is_network_port(port)):
-                            raise ValueError("claim requires a UART path or tcp:// / udp:// endpoint")
+                                is_device_port(port) or is_non_serial_port(port)):
+                            raise ValueError("claim requires a UART path or a tcp:// / udp:// / "
+                                             "unix:// / ssh-socket:// endpoint")
                         if not isinstance(baud, int) or isinstance(baud, bool) or baud <= 0:
                             raise ValueError("claim requires a positive baud rate")
                         if self.serial is not None:
@@ -383,13 +391,19 @@ class UartHub:
                                     f"UART already claimed: {self.port} at {self.baud}"
                                 )
                         else:
-                            if not is_network_port(port) and port_identity(port) not in {
+                            if not is_non_serial_port(port) and port_identity(port) not in {
                                     port_identity(p) for p in discover_serial_ports()}:
                                 raise RuntimeError(f"UART port is not available: {port}")
                             try:
-                                self.serial = open_device_transport(port, baud, 0.1)
+                                preopened = getattr(self, "preopened", None)
+                                self.preopened = None
+                                self.serial = preopened or open_device_transport(port, baud, 0.1)
                             except OSError as exc:
-                                raise RuntimeError(f"cannot open {port}: {exc}") from exc
+                                # SSH links name their failure (auth_failed, ...).
+                                error = RuntimeError(f"cannot open {port}: {exc}")
+                                if getattr(exc, "state", None):
+                                    error.code = exc.state  # type: ignore[attr-defined]
+                                raise error from exc
                             self.port = port
                             self.baud = baud
                             response = {
@@ -448,6 +462,9 @@ class UartHub:
                             raise RuntimeError("cannot write while flash is in progress")
                         if self.serial is None:
                             raise RuntimeError("UART hub has no claimed port")
+                        if getattr(self.serial, "available", True) is False:
+                            state = self.serial.link_state().get("state", "down")
+                            raise RuntimeError(f"device link is {state}; nothing was sent")
                         try:
                             frame = base64.b64decode(str(request.get("data", "")), validate=True)
                         except ValueError as exc:
@@ -482,6 +499,8 @@ class UartHub:
                         raise ValueError(f"unknown control action: {action}")
         except Exception as exc:
             response = {"ok": False, "error": str(exc)}
+            if getattr(exc, "code", None):
+                response["code"] = exc.code  # type: ignore[attr-defined]
         try:
             client.sendall(json.dumps(response).encode("utf-8") + b"\n")
         finally:
@@ -623,7 +642,7 @@ def wait_pid_exit(pid: int, timeout: float) -> bool:
 def main(argv: list[str] | None = None) -> int:
     ipc.configure_console_streams()
     parser = argparse.ArgumentParser(description="UART fan-out hub")
-    parser.add_argument("--port", help="optional initial UART path or tcp:// / udp:// endpoint claim")
+    parser.add_argument("--port", help="optional initial UART path or tcp:// / udp:// / unix:// / ssh-socket:// endpoint claim")
     parser.add_argument("--baud", type=int, default=2000000)
     parser.add_argument("--socket", default=ipc.default_hub_path())
     parser.add_argument("--single-port", action="store_true", help="legacy protocol for conformance testing")

@@ -25,21 +25,23 @@ from typing import Any, Callable
 try:
     from . import flash_snapshot as snapshots
     from . import mcp_status as mcp_status
+    from . import ssh_socket
     from .hub_client import (
         DEFAULT_SOCKET, MULTIPORT_PROTOCOL, BaudConflictError, HubProcessManager, port_identity)
     from .uart_client import (
         FRAME_COMMAND, FRAME_ERROR, FRAME_EVENT, FRAME_HELLO, FRAME_NAMES, FRAME_RESPONSE,
         PROTOCOL_VERSION, FrameDispatchUnknown, UartReader, discover_serial_port_details, encode_json_frame,
-        is_device_port, is_network_port, make_request, open_uart_transport, send_frame)
+        is_device_port, is_non_serial_port, make_request, open_uart_transport, send_frame)
 except ImportError:
     import flash_snapshot as snapshots
     import mcp_status as mcp_status
+    import ssh_socket
     from hub_client import (
         DEFAULT_SOCKET, MULTIPORT_PROTOCOL, BaudConflictError, HubProcessManager, port_identity)
     from uart_client import (
         FRAME_COMMAND, FRAME_ERROR, FRAME_EVENT, FRAME_HELLO, FRAME_NAMES, FRAME_RESPONSE,
         PROTOCOL_VERSION, FrameDispatchUnknown, UartReader, discover_serial_port_details, encode_json_frame,
-        is_device_port, is_network_port, make_request, open_uart_transport, send_frame)
+        is_device_port, is_non_serial_port, make_request, open_uart_transport, send_frame)
 
 POLICIES = ("observe", "interact", "hardware")
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "expired", "rejected"}
@@ -670,6 +672,33 @@ class DeckAgent:
                 "tx_atomic": bool(hub and "write_frame" in (hub.get("features") or [])),
                 "sessions": sessions, "flash_jobs": jobs}
 
+    def resolve_port(self, port: str) -> str:
+        """A paired SSH device name ("lab-pi") maps to `ssh-socket://<name>`."""
+        if not port or port.startswith("/") or "://" in port or not ssh_socket.supported():
+            return port
+        try:
+            name = self._ssh_store().find(port)
+        except OSError:
+            name = None
+        return ssh_socket.device_url(name) if name else port
+
+    def _ssh_store(self) -> ssh_socket.DeviceStore:
+        return ssh_socket.DeviceStore()
+
+    def ssh_devices(self) -> list[dict[str, Any]]:
+        if not ssh_socket.supported():
+            return []
+        try:
+            manager = self.manager_factory(socket_path=self.socket_path)
+            if manager.socket_ready():
+                return list(manager.request_control("ssh_devices").get("devices", []))
+        except (OSError, RuntimeError, ValueError):
+            pass
+        try:
+            return ssh_socket.list_devices(self._ssh_store())
+        except OSError:
+            return []
+
     def list_ports(self) -> dict[str, Any]:
         claimed: dict[str, dict[str, Any]] = {}
         try:
@@ -691,14 +720,23 @@ class DeckAgent:
             info["hint"] = ("possibly an ESP32 USB console (confirm with serial_hello)" if "jtag" in text or "usb serial" in text
                             else "")
             ports.append(info)
-        return {"ports": ports}
+        remote = []
+        for device in self.ssh_devices():
+            link = device.get("link") or {}
+            remote.append({"device": device.get("name"), "port": device.get("port_url"),
+                           "kind": "ssh-socket", "host": f"{device.get('user')}@{device.get('host')}",
+                           "remote_socket": device.get("remote_socket"), "link_state": link.get("state"),
+                           "hint": "remote Unix socket over SSH; connect with its name"})
+        return {"ports": ports, "ssh_devices": remote}
 
     def connect(self, port: str, baud: int | None, mode: str,
                 change_live_baud: bool = False) -> dict[str, Any]:
         if mode not in ("control", "raw"):
             raise AgentError("invalid_argument", "mode must be 'control' or 'raw'")
-        if not port or not (is_device_port(port) or is_network_port(port)):
-            raise AgentError("invalid_argument", "port must be a device path, COM port or tcp:// / udp:// endpoint")
+        port = self.resolve_port(port)
+        if not port or not (is_device_port(port) or is_non_serial_port(port)):
+            raise AgentError("invalid_argument", "port must be a device path, COM port, a tcp:// / udp:// / "
+                             "unix:// endpoint or a paired SSH device name")
         if change_live_baud:
             if not baud:
                 raise AgentError("invalid_argument", "change_live_baud needs an explicit baud")
@@ -827,8 +865,8 @@ class DeckAgent:
         self.require("hardware")
         session = self.session(port)
         session.ensure_alive()
-        if is_network_port(session.port):
-            raise AgentError("invalid_state", "reset needs a physical UART, not a network endpoint")
+        if is_non_serial_port(session.port):
+            raise AgentError("invalid_state", "reset needs a physical UART, not a network/socket endpoint")
         cursor = session.cursor
         session.note("reset (RTS/EN pulse)")
         try:
@@ -844,8 +882,8 @@ class DeckAgent:
         self.require("hardware")
         session = self.session(port)
         session.ensure_alive()
-        if is_network_port(session.port):
-            raise AgentError("invalid_state", "bootloader needs a physical UART, not a network endpoint")
+        if is_non_serial_port(session.port):
+            raise AgentError("invalid_state", "bootloader needs a physical UART, not a network/socket endpoint")
         session.note("enter ROM bootloader (DTR/RTS)")
         try:
             session.manager.request_control("bootloader")
@@ -872,7 +910,7 @@ class DeckAgent:
     def flash_preview(self, build_dir: str, port: str | None, flash_baud: int) -> dict[str, Any]:
         session = self.session(port)
         session.ensure_alive()
-        if is_network_port(session.port):
+        if is_non_serial_port(session.port):
             raise AgentError("invalid_state", "flash needs a physical UART")
         if not 115200 <= flash_baud <= 5000000:
             raise AgentError("invalid_argument", "flash_baud must be between 115200 and 5000000")
