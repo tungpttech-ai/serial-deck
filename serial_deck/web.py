@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 try:
     from . import mcp_status, runtime, ssh_socket
+    from .autoconnect import RuleWatcher, Settings, SettingsError
     from .deckconfig import JsonFile
     from .hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
@@ -58,6 +59,7 @@ except ImportError:
     import mcp_status
     import runtime
     import ssh_socket
+    from autoconnect import RuleWatcher, Settings, SettingsError
     from deckconfig import JsonFile
     from hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
@@ -316,6 +318,7 @@ class DeckWebBridge:
         self.generation = 0
         self._closed = False
         self._remembered: dict[str, Any] | None = None
+        self.on_session_change: Callable[[], None] | None = None
         self._last_hub_flash_line: tuple[int, str] | None = None
         self.hub_manager = hub_manager
         self.hub_registry = hub_registry
@@ -474,6 +477,7 @@ class DeckWebBridge:
             self.reader_thread.start()
 
         self._remember_device(port, baud)
+        self._session_changed()
         self._send_hello()
         self.broadcast({
             "type": "status",
@@ -498,10 +502,21 @@ class DeckWebBridge:
         self.broadcast({"type": "status", **status})
         return status
 
+    def _session_changed(self) -> None:
+        callback = self.on_session_change
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                pass
+
     def disconnect(self) -> dict[str, Any]:
         self.generation += 1  # the user (or close) wants it off: no reconnect
         self.reconnecting = False
-        return self._drop_connection()
+        status = self._drop_connection()
+        if not self._closed:  # closing the app is not "the user closed this port"
+            self._session_changed()
+        return status
 
     def _drop_connection(self) -> dict[str, Any]:
         with self.lock:
@@ -940,6 +955,9 @@ class ConnectionManager:
         self._bridges: dict[str, DeckWebBridge] = {self.DEFAULT_ID: default_bridge}
         self._order: list[str] = [self.DEFAULT_ID]
         self.lifecycle_hubs: list[HubProcessManager] = []
+        self.settings = Settings()
+        self.watcher: RuleWatcher | None = None
+        default_bridge.on_session_change = self.remember_session
 
     def get(self, conn_id: str) -> DeckWebBridge:
         with self.lock:
@@ -951,6 +969,7 @@ class ConnectionManager:
     def create(self) -> tuple[str, DeckWebBridge]:
         conn_id = uuid.uuid4().hex[:12]
         bridge = DeckWebBridge(default_baud=self.baud, elf=self.elf, hub_registry=self.hub_registry)
+        bridge.on_session_change = self.remember_session
         with self.lock:
             self._bridges[conn_id] = bridge
             self._order.append(conn_id)
@@ -973,7 +992,87 @@ class ConnectionManager:
         return [{"id": conn_id, "default": conn_id == self.DEFAULT_ID, **bridge.get_status()}
                 for conn_id, bridge in items]
 
+    def remember_session(self) -> None:
+        """Keep the ports that are open now, for "restore on start"."""
+        with self.lock:
+            bridges = [self._bridges[i] for i in self._order if i in self._bridges]
+        ports = []
+        for bridge in bridges:
+            if bridge.connected and bridge._remembered:
+                item = {key: bridge._remembered.get(key, "") for key in
+                        ("port", "baud", "mode", "usb_vid_pid", "usb_serial")}
+                if item not in ports:
+                    ports.append(item)
+        try:
+            self.settings.update(last_ports=ports)
+        except Exception:
+            pass
+
+    def restore_last_session(self) -> list[str]:
+        """Reconnect the ports that were open last time (only if the user opted in)."""
+        settings = self.settings.get()
+        if not settings["restore_on_start"]:
+            return []
+        restored = []
+        for item in settings["last_ports"]:
+            try:
+                port = self._current_port(item)
+                if port is None or self.is_port_open(port):
+                    continue
+                conn_id, bridge = self._free_bridge()
+                bridge.connect(port, int(item.get("baud") or self.baud), item.get("mode") or "linux")
+                restored.append(port)
+            except Exception:
+                continue  # a port that is gone or busy must not block the others
+        return restored
+
+    def _current_port(self, item: dict[str, Any]) -> str | None:
+        port = str(item.get("port", ""))
+        if not port:
+            return None
+        if is_non_serial_port(port):
+            return port
+        present = self.default_bridge_ports()
+        if item.get("usb_vid_pid"):
+            return find_port_by_usb(item["usb_vid_pid"], item.get("usb_serial") or "", present)
+        return port if port in present else None
+
+    def default_bridge_ports(self) -> list[str]:
+        with self.lock:
+            bridge = self._bridges.get(self.DEFAULT_ID)
+        try:
+            return bridge.list_ports() if bridge is not None else []
+        except Exception:
+            return []
+
+    def is_port_open(self, port: str) -> bool:
+        with self.lock:
+            return any(b.connected and b.port == port for b in self._bridges.values())
+
+    def _free_bridge(self) -> tuple[str, DeckWebBridge]:
+        """A tab that is not connected (the default one first), or a new tab."""
+        with self.lock:
+            for conn_id in self._order:
+                bridge = self._bridges.get(conn_id)
+                if bridge is not None and not bridge.connected and not bridge.reconnecting:
+                    return conn_id, bridge
+        return self.create()
+
+    def start_rules(self) -> None:
+        if self.watcher is not None:
+            return
+
+        def connect(port: str, rule: dict[str, Any]) -> None:
+            conn_id, bridge = self._free_bridge()
+            bridge.connect(port, int(rule.get("baud") or self.baud), rule.get("mode") or "linux")
+
+        self.watcher = RuleWatcher(self.settings, self.default_bridge_ports, usb_identity,
+                                   self.is_port_open, connect)
+        self.watcher.start()
+
     def close_all(self) -> None:
+        if self.watcher is not None:
+            self.watcher.close()
         with self.lock:
             bridges = list(self._bridges.values())
             self._bridges.clear()
@@ -1219,8 +1318,12 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             self._send_json(mcp_status.overview())
             return
 
+        if path == "/api/settings":
+            self._send_json({"ok": True, "settings": self.connections.settings.get()})
+            return
+
         if path == "/api/ports":
-            details = discover_serial_port_details()
+            details = [{**item, **usb_identity(item["device"])} for item in discover_serial_port_details()]
             self._send_json({"ports": [item["device"] for item in details], "details": details})
             return
 
@@ -1356,6 +1459,22 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
 
             if path.startswith("/api/ssh/"):
                 self._send_json(*self._ssh_request(path[len("/api/ssh/"):], body))
+                return
+
+            if path == "/api/settings":
+                if not self._action_token_ok():
+                    self._send_json({"ok": False, "error": "this action needs the dashboard page"},
+                                    status=HTTPStatus.FORBIDDEN)
+                    return
+                changes = {key: body[key] for key in ("restore_on_start", "rules") if key in body}
+                try:
+                    settings = self.connections.settings.update(**changes)
+                except SettingsError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                if settings["rules"]:
+                    self.connections.start_rules()
+                self._send_json({"ok": True, "settings": settings})
                 return
 
             if path == "/api/auto_reconnect":
@@ -1643,9 +1762,10 @@ HTML_PAGE = """<!DOCTYPE html>
     /* Collapsing the dock removes it from layout (and hit-testing) instead of
        leaving zero-width cards that still overlap the console. */
     #sidebarPanel.collapsed { display: none; }
-    body[data-page="mcp"] #telemetryPanel { display: none; }
+    body[data-page="mcp"] #telemetryPanel, body[data-page="auto"] #telemetryPanel { display: none; }
     body:not([data-page="mcp"]) #mcpPage { display: none; }
-    #mcpPage { min-height: 0; }
+    body:not([data-page="auto"]) #autoPage { display: none; }
+    #mcpPage, #autoPage { min-height: 0; }
     .mcp-card { background: #1e2024; border: 1px solid #3b494c; border-radius: 4px; }
     .mcp-code { position: relative; }
     .mcp-code pre {
@@ -1748,11 +1868,11 @@ HTML_PAGE = """<!DOCTYPE html>
         padding: 6px; border-right: none; border-top: 1px solid #3b494c;
       }
       .rail-mark, .rail-sep { display: none; }
-      header, body > section, main, #mcpPage { margin-left: 0; }
+      header, body > section, main, #mcpPage, #autoPage { margin-left: 0; }
       /* The rail becomes a bottom bar: reserve its height so it never sits on
          top of the last controls (it is position:fixed, outside the flow). */
       body { padding-bottom: 48px; box-sizing: border-box; }
-      #telemetryPanel, #mcpPage { margin-bottom: 0; }
+      #telemetryPanel, #mcpPage, #autoPage { margin-bottom: 0; }
       #appHeader { align-items: stretch; }
       #appHeader > div:first-child { width: 100%; }
       #connectionControls { width: 100%; justify-content: flex-start; }
@@ -1787,6 +1907,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <button class="rail-btn" type="button" data-rail="control" title="Device control and quick queries (control protocol)" onclick="railSelect('control')"><i class="fa-solid fa-gamepad"></i></button>
     <button class="rail-btn" type="button" data-rail="flash" title="Flash utility" onclick="railSelect('flash')"><i class="fa-solid fa-bolt"></i></button>
     <div class="rail-sep" aria-hidden="true"></div>
+    <button class="rail-btn" type="button" data-rail="auto" title="Automation: auto-connect and scripts" onclick="railSelect('auto')"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
     <button class="rail-btn" type="button" data-rail="mcp" title="MCP: AI agent setup and live activity" onclick="railSelect('mcp')"><i class="fa-solid fa-plug-circle-bolt"></i><span id="mcpRailBadge" class="rail-badge hidden">0</span></button>
   </nav>
 
@@ -2199,6 +2320,37 @@ HTML_PAGE = """<!DOCTYPE html>
 
   </main>
 
+  <!-- AUTOMATION PAGE: auto-connect rules and (below) scripts -->
+  <section id="autoPage" class="flex-1 overflow-y-auto p-4 select-text">
+    <div class="max-w-4xl mx-auto space-y-4">
+      <div class="flex items-center space-x-2">
+        <i class="fa-solid fa-wand-magic-sparkles text-brand-accent"></i>
+        <h2 class="text-sm font-bold tracking-wider uppercase">Automation</h2>
+      </div>
+
+      <div class="glass-card p-4 space-y-3 text-xs">
+        <h3 class="font-bold text-brand-text">Auto-connect</h3>
+        <p class="text-brand-muted">Opening a UART can reset the board (DTR/RTS), so nothing here is on until you turn it on.
+          The <b>Auto-reconnect</b> checkbox next to Connect handles a device that drops while you are using it.</p>
+        <label class="flex items-center space-x-2 cursor-pointer">
+          <input id="autoRestore" type="checkbox" onchange="saveAutoSettings()" class="accent-[#00daf3]">
+          <span>Reconnect the ports I had open when I last closed Serial Deck</span>
+        </label>
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <span class="font-semibold text-brand-text">Device rules</span>
+            <button onclick="addRuleFromPort()" class="px-2 py-1 bg-brand-surfaceAlt hover:bg-brand-border border border-brand-border rounded font-semibold"><i class="fa-solid fa-plus mr-1"></i>Add rule for the selected port</button>
+          </div>
+          <p class="text-brand-muted mb-2">When a matching device is plugged in, it connects by itself with the baud and mode you chose.
+            Matches by USB vid:pid and serial number, so it still works when the port name changes.</p>
+          <div id="autoRules" class="space-y-1.5"></div>
+          <div id="autoRulesEmpty" class="text-brand-muted">No rules yet. Select a USB port in the port list, then press "Add rule".</div>
+          <div id="autoError" class="hidden text-brand-danger font-semibold mt-2"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- MCP PAGE: agent setup, registrations and live tool activity -->
   <section id="mcpPage" class="flex-1 overflow-y-auto p-4 select-text">
     <div class="max-w-6xl mx-auto space-y-4">
@@ -2393,14 +2545,16 @@ HTML_PAGE = """<!DOCTYPE html>
     function showPage(page) {
       currentPage = page;
       document.body.dataset.page = page;
-      if (page === 'mcp') { refreshMcp().then(scheduleMcp); } else { requestAnimationFrame(termFit); }
+      if (page === 'mcp') { refreshMcp().then(scheduleMcp); }
+      else if (page === 'auto') { loadAutoSettings(); }
+      else { requestAnimationFrame(termFit); }
       updateRail();
     }
 
     // Left rail: Console = deck without dock; Control / Flash = deck with the
     // dock open on that card; MCP = agent setup + activity page.
     function railSelect(target) {
-      if (target === 'mcp') { showPage('mcp'); return; }
+      if (target === 'mcp' || target === 'auto') { showPage(target); return; }
       showPage('deck');
       if (target === 'console') { setSidebarCollapsed(true); return; }
       setSidebarCollapsed(false);
@@ -2408,7 +2562,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function updateRail() {
-      const active = currentPage === 'mcp' ? 'mcp' : (sidebarCollapsed ? 'console' : 'control');
+      const active = (currentPage === 'mcp' || currentPage === 'auto') ? currentPage : (sidebarCollapsed ? 'console' : 'control');
       document.querySelectorAll('.rail-btn').forEach(btn => {
         const rail = btn.dataset.rail;
         btn.classList.toggle('active', rail === active);
@@ -3818,6 +3972,88 @@ HTML_PAGE = """<!DOCTYPE html>
       await scanPorts();
     }
 
+    // ---------------- Automation: auto-connect ----------------
+    let autoSettings = { restore_on_start: false, rules: [] };
+
+    async function loadAutoSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+        if (data.ok) autoSettings = data.settings;
+      } catch (err) { return; }
+      renderAutoSettings();
+    }
+
+    function renderAutoSettings() {
+      document.getElementById('autoRestore').checked = !!autoSettings.restore_on_start;
+      const box = document.getElementById('autoRules');
+      const rules = autoSettings.rules || [];
+      document.getElementById('autoRulesEmpty').classList.toggle('hidden', rules.length > 0);
+      box.replaceChildren(...rules.map((rule, index) => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 flex-wrap bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5';
+        const on = document.createElement('input');
+        on.type = 'checkbox'; on.checked = rule.enabled !== false; on.title = 'Enabled';
+        on.onchange = () => { rule.enabled = on.checked; saveAutoSettings(); };
+        const name = document.createElement('span');
+        name.className = 'font-semibold mono';
+        name.textContent = rule.label;
+        const id = document.createElement('span');
+        id.className = 'text-brand-muted mono';
+        id.textContent = rule.usb_vid_pid ? `${rule.usb_vid_pid}${rule.usb_serial ? ' · ' + rule.usb_serial : ''}` : rule.port;
+        const baud = document.createElement('input');
+        baud.type = 'number'; baud.value = rule.baud; baud.min = 9600; baud.max = 12000000;
+        baud.className = 'w-24 bg-brand-surface border border-brand-border rounded px-1 py-0.5 mono';
+        baud.onchange = () => { rule.baud = parseInt(baud.value, 10) || rule.baud; saveAutoSettings(); };
+        const mode = document.createElement('select');
+        mode.className = 'bg-brand-surface border border-brand-border rounded px-1 py-0.5 mono';
+        for (const [value, text] of [['linux', 'Linux / Raw'], ['control', 'Control']]) {
+          mode.add(new Option(text, value, false, rule.mode === value));
+        }
+        mode.onchange = () => { rule.mode = mode.value; saveAutoSettings(); };
+        const del = document.createElement('button');
+        del.className = 'ml-auto text-brand-muted hover:text-brand-danger';
+        del.title = 'Delete rule';
+        del.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+        del.onclick = () => { autoSettings.rules.splice(index, 1); saveAutoSettings(); };
+        row.append(on, name, id, baud, mode, del);
+        return row;
+      }));
+    }
+
+    async function saveAutoSettings() {
+      const err = document.getElementById('autoError');
+      err.classList.add('hidden');
+      const body = { restore_on_start: document.getElementById('autoRestore').checked,
+                     rules: autoSettings.rules || [] };
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.ok) autoSettings = data.settings;
+        else { err.textContent = data.error || 'Could not save'; err.classList.remove('hidden'); }
+      } catch (e) { err.textContent = String(e); err.classList.remove('hidden'); }
+      renderAutoSettings();
+    }
+
+    function addRuleFromPort() {
+      const err = document.getElementById('autoError');
+      const port = selectedPort();
+      const detail = portDetails.get(port) || {};
+      const status = ensureConn(connId).status || {};
+      if (!port || port === NET_OPTION) {
+        err.textContent = 'Select a port in the port list first.'; err.classList.remove('hidden'); return;
+      }
+      const rule = { label: (detail.description || port).slice(0, 48), baud: status.baud || 115200,
+                     mode: status.console_mode || 'linux', enabled: true };
+      if (detail.usb_vid_pid) { rule.usb_vid_pid = detail.usb_vid_pid; rule.usb_serial = detail.usb_serial || ''; }
+      else rule.port = port;
+      autoSettings.rules = [...(autoSettings.rules || []), rule];
+      saveAutoSettings();
+    }
+
     // ---------------- MCP page ----------------
     let mcpData = null;
     let mcpTimer = null;
@@ -4099,7 +4335,20 @@ class WebBackend:
         return f"http://{host}:{self.port}/"
 
     def serve_forever(self) -> None:
+        threading.Thread(target=self._start_autoconnect, name="serial-deck-autoconnect",
+                         daemon=True).start()
         self.server.serve_forever(poll_interval=0.2)
+
+    def _start_autoconnect(self) -> None:
+        """Opt-in only: restore last session's ports, and watch for rule matches."""
+        try:
+            settings = self.connections.settings.get()
+            if settings["restore_on_start"]:
+                self.connections.restore_last_session()
+            if settings["rules"]:
+                self.connections.start_rules()
+        except Exception:
+            pass  # settings trouble must never keep the dashboard from starting
 
     def start_in_thread(self) -> threading.Thread:
         self._serve_thread = threading.Thread(
