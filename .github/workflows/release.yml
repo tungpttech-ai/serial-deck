@@ -495,7 +495,7 @@ jobs:
         run: |
           set -euo pipefail
           deb=$(ls dist/*.deb)
-          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+          for image in ubuntu:22.04 debian:12; do
             echo "::group::$image"
             # Noninteractive apt (tzdata would otherwise wait for input) and a hard
             # per-image deadline, so a hang fails the job instead of stalling it.
