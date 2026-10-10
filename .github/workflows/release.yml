@@ -442,7 +442,7 @@ jobs:
       - name: Freeze
         run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
       - name: Smoke test the bundle (with a Tk window under Xvfb)
-        run: xvfb-run -a env SERIAL_DECK_NO_BROWSER_FALLBACK=1 QT_QPA_PLATFORM=xcb QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --no-sandbox" python packaging/smoke_test.py dist/serial-deck/serial-deck-cli --gui dist/serial-deck/serial-deck --window
+        run: xvfb-run -a env SERIAL_DECK_NO_BROWSER_FALLBACK=1 QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --no-sandbox" python packaging/smoke_test.py dist/serial-deck/serial-deck-cli --gui dist/serial-deck/serial-deck --window
       - name: AppImage
         run: |
           set -euo pipefail
