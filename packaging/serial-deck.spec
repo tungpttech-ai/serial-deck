@@ -73,7 +73,9 @@ analysis = Analysis(
     datas=datas,
     binaries=binaries,
     hiddenimports=hiddenimports,
-    excludes=["tests", "pytest", "IPython", "matplotlib", "numpy"],
+    excludes=["tests", "pytest", "IPython", "matplotlib", "numpy",
+              "PyQt6.QtMultimedia", "PyQt6.QtMultimediaWidgets",
+              "PyQt6.QtTextToSpeech", "PyQt6.QtSpatialAudio"],
     noarchive=False,
 )
 if not IS_WIN and not IS_MAC:
