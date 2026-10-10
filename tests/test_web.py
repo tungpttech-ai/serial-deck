@@ -220,3 +220,78 @@ class SmallWindowLogLayoutTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertIn("flex: 0 0 auto", match.group(1))
         self.assertIn("height: max(520px, 80vh)", match.group(1))
+
+
+def served_page(token="tok"):
+    """The page as do_GET serves it: token and sandbox document substituted."""
+    import json
+    from serial_deck.web import SANDBOX_DOCUMENT
+    return HTML_PAGE.replace("__DECK_ACTION_TOKEN__", token).replace(
+        "__DECK_SANDBOX_DOC__", json.dumps(SANDBOX_DOCUMENT).replace("</", "<\\/"))
+
+
+class PageScriptSyntaxTest(unittest.TestCase):
+    """The page is one big Python string: a stray `\\n` there breaks the whole dashboard."""
+
+    def test_the_inline_script_parses(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        script = re.findall(r"<script>(.*?)</script>", served_page(), re.S)[-1]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "page.js"
+            path.write_text(script, encoding="utf-8")
+            result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-600:])
+
+
+class SandboxTest(unittest.TestCase):
+    """User JavaScript must never reach the dashboard's origin or its action token."""
+
+    def test_the_iframe_is_sandboxed_without_same_origin(self):
+        page = served_page()
+        # Every place the page sets a sandbox attribute, whatever its value.
+        values = re.findall(r"setAttribute\(\s*['\"]sandbox['\"]\s*,\s*['\"]([^'\"]*)['\"]", page)
+        self.assertEqual(values, ["allow-scripts"])
+        self.assertNotRegex(page, r"\.sandbox\s*[.=\[]")  # no other way of setting it
+        self.assertNotRegex(page, r"sandbox=['\"][^'\"]*allow-(same-origin|top-navigation|popups|forms|modals)")
+
+    def test_the_sandbox_document_is_self_contained_and_holds_no_secret(self):
+        from serial_deck.web import SANDBOX_DOCUMENT
+        self.assertNotIn("__DECK_ACTION_TOKEN__", SANDBOX_DOCUMENT)
+        self.assertNotIn("DECK_ACTION_TOKEN", SANDBOX_DOCUMENT)
+        self.assertNotIn("fetch(", SANDBOX_DOCUMENT)  # its only way out is postMessage
+        self.assertNotIn("XMLHttpRequest", SANDBOX_DOCUMENT)
+
+    def test_the_parent_only_listens_to_its_own_frame_and_a_fixed_set_of_verbs(self):
+        page = served_page()
+        self.assertIn("event.source !== jsFrame.contentWindow", page)
+        for verb in ("'log'", "'error'", "'done'", "'stopped'", "'send'"):
+            self.assertIn(f"msg.type === {verb}", page)
+
+    def test_sandbox_markup_cannot_close_the_script_tag_early(self):
+        page = served_page()
+        self.assertNotIn("</script>", page.split("const SANDBOX_DOC = ", 1)[1].split("\n", 1)[0])
+
+    def test_a_sandboxed_post_is_refused_as_cross_origin(self):
+        # A sandboxed frame without allow-same-origin sends `Origin: null`.
+        from serial_deck import web
+        sent = []
+        handler = type("H", (), {"headers": {"Content-Type": "application/json", "Origin": "null",
+                                             "Host": "127.0.0.1:1"},
+                                 "_reject": lambda self, status, error: sent.append(status)})()
+        self.assertFalse(web.DeckHttpHandler._post_ok(handler))
+        self.assertEqual(sent, [web.HTTPStatus.FORBIDDEN])
+
+    def test_script_actions_that_make_a_device_act_need_the_page_token(self):
+        from serial_deck import web
+        handler = type("H", (), {"headers": {"X-Deck-Action": ""}, "action_token": "tok",
+                                 "connections": None})()
+        handler._action_token_ok = lambda: web.DeckHttpHandler._action_token_ok(handler)
+        for name in web.SCRIPT_TOKEN_ACTIONS:
+            _, status = web.DeckHttpHandler._script_request(handler, name, {"name": "x"})
+            self.assertEqual(status, web.HTTPStatus.FORBIDDEN, name)
+        self.assertNotIn("save", web.SCRIPT_WEB_ACTIONS)
+        self.assertNotIn("write", web.SCRIPT_WEB_ACTIONS)

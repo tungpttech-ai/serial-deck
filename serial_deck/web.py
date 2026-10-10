@@ -932,6 +932,13 @@ SSH_WEB_ACTIONS = {
 }
 # Actions that change a host or use a secret: page token required.
 SSH_BOARD_ACTIONS = ("pair", "forget", "unlock")
+# Python scripts: the page may list, run, stop, read output and set autorun. It can
+# not create or change one (they are files the user edits). Run/stop/autorun make a
+# device act, so they need the page token.
+SCRIPT_WEB_ACTIONS = {"list": "script_list", "status": "script_status", "logs": "script_logs",
+                      "run": "script_run", "stop": "script_stop", "autorun": "script_autorun"}
+SCRIPT_TOKEN_ACTIONS = ("run", "stop", "autorun")
+SCRIPT_FIELDS = ("name", "port", "baud", "id", "after", "limit", "enabled", "match")
 SSH_PAIR_FIELDS = ("name", "host", "ssh_port", "user", "auth", "password", "passphrase", "key_passphrase",
                    "key_path", "fingerprint", "replace_host_key", "remote_socket")
 
@@ -1292,7 +1299,8 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         if path == "/" or path == "/index.html":
-            page = HTML_PAGE.replace("__DECK_ACTION_TOKEN__", self.action_token)
+            page = HTML_PAGE.replace("__DECK_ACTION_TOKEN__", self.action_token).replace(
+                "__DECK_SANDBOX_DOC__", json.dumps(SANDBOX_DOCUMENT).replace("</", "<\\/"))
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -1457,6 +1465,10 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "status": status})
                 return
 
+            if path.startswith("/api/script/"):
+                self._send_json(*self._script_request(path[len("/api/script/"):], body))
+                return
+
             if path.startswith("/api/ssh/"):
                 self._send_json(*self._ssh_request(path[len("/api/ssh/"):], body))
                 return
@@ -1556,6 +1568,21 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
     def _action_token_ok(self) -> bool:
         return secrets.compare_digest(self.headers.get("X-Deck-Action", ""), self.action_token or "\0")
 
+    def _script_request(self, name: str, body: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
+        action = SCRIPT_WEB_ACTIONS.get(name)
+        if action is None:
+            return {"ok": False, "error": f"unknown script action: {name}"}, HTTPStatus.NOT_FOUND
+        if name in SCRIPT_TOKEN_ACTIONS and not self._action_token_ok():
+            return {"ok": False, "error": "this action needs the dashboard page"}, HTTPStatus.FORBIDDEN
+        payload = {key: body[key] for key in SCRIPT_FIELDS if key in body}
+        manager = self.connections.hub_registry.default_manager
+        try:
+            if manager is None:
+                raise OSError("the hub is not running yet; connect a device first")
+            return manager.request_control(action, timeout=10.0, **payload), HTTPStatus.OK
+        except (OSError, RuntimeError) as exc:
+            return {"ok": False, "error": str(exc)}, HTTPStatus.OK
+
     def _ssh_request(self, name: str, body: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
         action = SSH_WEB_ACTIONS.get(name)
         if action is None:
@@ -1633,6 +1660,78 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
         # Suppress noisy default http logging
         pass
 
+
+# Page scripts run in an <iframe sandbox="allow-scripts"> with this document as its
+# srcdoc: no `allow-same-origin`, so it has an opaque origin, cannot read the
+# dashboard's cookies, storage or the action token, and its fetches carry
+# `Origin: null` (refused by _post_ok). The user's code runs in a Worker made here,
+# so a busy loop cannot freeze the dashboard and Stop can terminate() it. The only
+# way out is postMessage, and the parent accepts a fixed set of verbs.
+SANDBOX_DOCUMENT = r"""<!doctype html><meta charset="utf-8"><script>
+let worker = null;
+const WORKER_SOURCE = `
+let seq = 0; const waiters = new Map(); let text = ''; const lineHandlers = [];
+const MAX = 65536;
+function post(msg) { self.postMessage(msg); }
+function ask(type, payload) { return new Promise((resolve, reject) => {
+  const id = ++seq; waiters.set(id, { resolve, reject }); post(Object.assign({ type, id }, payload)); }); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const dev = {
+  send: data => ask('send', { data: String(data) }),
+  sendLine: data => ask('send', { data: String(data) + '\\n' }),
+  log: value => post({ type: 'log', text: String(value) }),
+  sleep,
+  flush: () => { text = ''; },
+  onLine: fn => { lineHandlers.push(fn); },
+  expect: (pattern, timeoutMs = 10000) => new Promise((resolve, reject) => {
+    const rx = pattern instanceof RegExp ? new RegExp(pattern.source, pattern.flags.replace('g', '')) : new RegExp(String(pattern));
+    const started = Date.now();
+    const check = () => {
+      const m = rx.exec(text);
+      if (m) { text = text.slice(m.index + m[0].length); resolve(m); return; }
+      if (Date.now() - started > timeoutMs) { reject(new Error('timed out waiting for ' + rx)); return; }
+      setTimeout(check, 25);
+    };
+    check();
+  }),
+};
+let lineBuffer = '';
+self.onmessage = async (event) => {
+  const msg = event.data || {};
+  if (msg.type === 'data') {
+    text = (text + msg.text).slice(-MAX);
+    lineBuffer += msg.text;
+    const parts = lineBuffer.split('\\n'); lineBuffer = parts.pop();
+    for (const line of parts) for (const fn of lineHandlers) { try { fn(line.replace(/\\r$/, '')); } catch (e) { post({ type: 'log', text: 'onLine failed: ' + e }); } }
+  } else if (msg.type === 'reply') {
+    const w = waiters.get(msg.id); waiters.delete(msg.id);
+    if (w) { msg.error ? w.reject(new Error(msg.error)) : w.resolve(msg.value); }
+  } else if (msg.type === 'start') {
+    try {
+      const fn = new (Object.getPrototypeOf(async function(){}).constructor)('dev', msg.code);
+      await fn(dev);
+      if (!lineHandlers.length) post({ type: 'done' });
+    } catch (e) { post({ type: 'error', text: String(e && e.stack || e) }); }
+  }
+};`;
+window.addEventListener('message', (event) => {
+  if (event.source !== parent) return;
+  const msg = event.data || {};
+  if (msg.type === 'start') {
+    if (worker) worker.terminate();
+    const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
+    worker = new Worker(url);
+    worker.onmessage = (e) => parent.postMessage(e.data, '*');
+    worker.onerror = (e) => parent.postMessage({ type: 'error', text: String(e.message || e) }, '*');
+    worker.postMessage({ type: 'start', code: String(msg.code) });
+  } else if (msg.type === 'stop') {
+    if (worker) { worker.terminate(); worker = null; }
+    parent.postMessage({ type: 'stopped' }, '*');
+  } else if (worker) {
+    worker.postMessage(msg);
+  }
+});
+</script>"""
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -2348,6 +2447,42 @@ HTML_PAGE = """<!DOCTYPE html>
           <div id="autoError" class="hidden text-brand-danger font-semibold mt-2"></div>
         </div>
       </div>
+
+      <div class="glass-card p-4 space-y-3 text-xs">
+        <div class="flex items-center justify-between">
+          <h3 class="font-bold text-brand-text">Python scripts</h3>
+          <button onclick="loadScripts()" title="Rescan the scripts folder" class="text-brand-muted hover:text-brand-accent"><i class="fa-solid fa-rotate"></i></button>
+        </div>
+        <p class="text-brand-muted">Scripts are Python files you write in <span id="scriptFolder" class="mono">~/.config/serial-deck/scripts</span>.
+          They run under the hub, so they keep going with this window closed, and use <span class="mono">dev.expect(...)</span> /
+          <span class="mono">dev.send_line(...)</span> to talk to the device. This page runs them; it never edits them.</p>
+        <div id="scriptList" class="space-y-1.5"></div>
+        <div id="scriptEmpty" class="text-brand-muted">No scripts yet. Save a file such as <span class="mono">hello.py</span> in the folder above.</div>
+        <div id="scriptError" class="hidden text-brand-danger font-semibold"></div>
+        <div id="scriptRunsBox" class="hidden">
+          <div class="font-semibold text-brand-text mb-1">Runs</div>
+          <div id="scriptRuns" class="space-y-1.5"></div>
+          <pre id="scriptOutput" class="hidden mono text-[11px] bg-[#0c0e12] border border-brand-border rounded p-2 mt-2 max-h-64 overflow-auto whitespace-pre-wrap"></pre>
+        </div>
+      </div>
+
+      <div class="glass-card p-4 space-y-3 text-xs">
+        <div class="flex items-center justify-between">
+          <h3 class="font-bold text-brand-text">JavaScript snippets</h3>
+          <span class="text-[10px] mono px-2 py-0.5 rounded border border-brand-border text-brand-muted">sandboxed · runs in this window only</span>
+        </div>
+        <p class="text-brand-muted">Quick scripts in the browser. They run in an isolated sandbox (no access to this page, its storage or
+          your files) and can only <span class="mono">dev.send</span> to the connected device and read what it sends. They stop when you
+          close this window; use a Python script for anything long-running.</p>
+        <textarea id="jsCode" spellcheck="false" rows="8" class="w-full bg-[#0c0e12] border border-brand-border rounded p-2 mono text-[12px] text-brand-text focus:outline-none focus:border-brand-accent"
+          placeholder="await dev.expect(/login:/, 10000);&#10;await dev.sendLine('root');&#10;dev.log('logged in');"></textarea>
+        <div class="flex items-center gap-2">
+          <button id="jsRunBtn" onclick="jsRun()" class="px-3 py-1.5 rounded font-bold bg-brand-accent text-brand-bg"><i class="fa-solid fa-play mr-1"></i>Run</button>
+          <button id="jsStopBtn" onclick="jsStop()" class="px-3 py-1.5 rounded font-semibold border border-brand-border" disabled><i class="fa-solid fa-stop mr-1"></i>Stop</button>
+          <span id="jsState" class="mono text-brand-muted">idle</span>
+        </div>
+        <pre id="jsOutput" class="mono text-[11px] bg-[#0c0e12] border border-brand-border rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap hidden"></pre>
+      </div>
     </div>
   </section>
 
@@ -2546,7 +2681,7 @@ HTML_PAGE = """<!DOCTYPE html>
       currentPage = page;
       document.body.dataset.page = page;
       if (page === 'mcp') { refreshMcp().then(scheduleMcp); }
-      else if (page === 'auto') { loadAutoSettings(); }
+      else if (page === 'auto') { loadAutoSettings(); loadScripts(); scheduleScripts(); }
       else { requestAnimationFrame(termFit); }
       updateRail();
     }
@@ -3313,6 +3448,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const bytes = b64ToBytes(event.data);
         pushRaw(conn, bytes);
         if (isActive && term) term.write(bytes);
+        if (jsRunning) jsFeed(id, new TextDecoder().decode(bytes, { stream: true }));
       } else if (event.type === 'frame') {
         conn.eventsBuffer.push(event);
         if (isActive) {
@@ -4052,6 +4188,240 @@ HTML_PAGE = """<!DOCTYPE html>
       else rule.port = port;
       autoSettings.rules = [...(autoSettings.rules || []), rule];
       saveAutoSettings();
+    }
+
+    // ---------------- Automation: Python scripts ----------------
+    let scriptData = { scripts: [], autorun: [], runs: [] };
+    let scriptOutputRun = null;
+    let scriptOutputCursor = 0;
+    let scriptTimer = null;
+
+    async function scriptPost(action, body) {
+      const res = await fetch('/api/script/' + action, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
+        body: JSON.stringify(body || {})
+      });
+      return res.json();
+    }
+
+    function scriptFail(text) {
+      const box = document.getElementById('scriptError');
+      box.textContent = text || '';
+      box.classList.toggle('hidden', !text);
+    }
+
+    async function loadScripts() {
+      const [list, status] = await Promise.all([scriptPost('list', {}), scriptPost('status', {})]);
+      if (list.ok) {
+        scriptData.scripts = list.scripts || [];
+        scriptData.autorun = list.autorun || [];
+        if (list.folder) document.getElementById('scriptFolder').textContent = list.folder;
+      }
+      if (status.ok) scriptData.runs = status.runs || [];
+      renderScripts();
+      if (scriptOutputRun) pollScriptOutput();
+    }
+
+    function scheduleScripts() {
+      clearTimeout(scriptTimer);
+      if (currentPage !== 'auto') return;
+      scriptTimer = setTimeout(async () => { await loadScripts(); scheduleScripts(); }, 1500);
+    }
+
+    function runningScript(name) {
+      return scriptData.runs.find(r => r.name === name && (r.state === 'running' || r.state === 'stopping'));
+    }
+
+    function renderScripts() {
+      document.getElementById('scriptEmpty').classList.toggle('hidden', scriptData.scripts.length > 0);
+      const box = document.getElementById('scriptList');
+      box.replaceChildren(...scriptData.scripts.map(item => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 flex-wrap bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5';
+        const name = document.createElement('span');
+        name.className = 'font-semibold mono';
+        name.textContent = item.name;
+        const desc = document.createElement('span');
+        desc.className = 'text-brand-muted flex-1 min-w-0 truncate';
+        desc.textContent = item.description || '';
+        row.append(name, desc);
+        if (!item.ok) { row.classList.add('opacity-60'); box.appendChild(row); return row; }
+        const live = runningScript(item.name);
+        const btn = document.createElement('button');
+        btn.className = 'px-2 py-1 rounded font-semibold border ' + (live
+          ? 'border-brand-danger text-brand-danger' : 'border-brand-border bg-brand-surface hover:bg-brand-border');
+        btn.innerHTML = live ? '<i class="fa-solid fa-stop mr-1"></i>Stop' : '<i class="fa-solid fa-play mr-1"></i>Run';
+        btn.onclick = () => live ? stopScript(live.id) : runScript(item.name);
+        const auto = document.createElement('label');
+        auto.className = 'flex items-center space-x-1 text-brand-muted cursor-pointer';
+        const box2 = document.createElement('input');
+        box2.type = 'checkbox';
+        box2.className = 'accent-[#00daf3]';
+        box2.checked = scriptData.autorun.some(r => r.name === item.name && r.enabled);
+        box2.onchange = () => setScriptAutorun(item.name, box2.checked, box2);
+        const label = document.createElement('span');
+        label.textContent = 'run when this port opens';
+        auto.append(box2, label);
+        row.append(btn, auto);
+        return row;
+      }));
+      const runsBox = document.getElementById('scriptRunsBox');
+      runsBox.classList.toggle('hidden', scriptData.runs.length === 0);
+      document.getElementById('scriptRuns').replaceChildren(...scriptData.runs.slice(0, 8).map(run => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 mono text-[11px]';
+        const color = run.state === 'running' ? 'text-brand-success' : (run.state === 'failed' ? 'text-brand-danger' : 'text-brand-muted');
+        const state = document.createElement('span');
+        state.className = color + ' w-16';
+        state.textContent = run.state;
+        const text = document.createElement('span');
+        text.className = 'flex-1 truncate';
+        text.textContent = `${run.name} · ${run.port}${run.autorun ? ' · autorun' : ''}`;
+        const view = document.createElement('button');
+        view.className = 'text-brand-accent hover:underline';
+        view.textContent = 'output';
+        view.onclick = () => showScriptOutput(run.id);
+        row.append(state, text, view);
+        return row;
+      }));
+    }
+
+    async function runScript(name) {
+      scriptFail('');
+      const port = selectedPort();
+      const status = ensureConn(connId).status || {};
+      if (!status.connected || !port) { scriptFail('Connect a device first, then run the script on it.'); return; }
+      const res = await scriptPost('run', { name, port: status.port || port, baud: status.baud || 115200 });
+      if (!res.ok) { scriptFail(res.error); return; }
+      showScriptOutput(res.run.id);
+      loadScripts();
+    }
+
+    async function stopScript(id) {
+      const res = await scriptPost('stop', { id });
+      if (!res.ok) scriptFail(res.error);
+      loadScripts();
+    }
+
+    async function setScriptAutorun(name, enabled, checkbox) {
+      scriptFail('');
+      const status = ensureConn(connId).status || {};
+      const port = status.connected ? status.port : selectedPort();
+      const detail = portDetails.get(port) || {};
+      let match = {};
+      if (detail.usb_vid_pid) { match = { usb_vid_pid: detail.usb_vid_pid, usb_serial: detail.usb_serial || '' }; }
+      else if (port) { match = { port }; }
+      const res = await scriptPost('autorun', { name, enabled, match, baud: status.baud || 115200 });
+      if (!res.ok) { scriptFail(res.error); checkbox.checked = !enabled; return; }
+      scriptData.autorun = res.autorun || [];
+      renderScripts();
+    }
+
+    function showScriptOutput(id) {
+      scriptOutputRun = id; scriptOutputCursor = 0;
+      const out = document.getElementById('scriptOutput');
+      out.textContent = '';
+      out.classList.remove('hidden');
+      pollScriptOutput();
+    }
+
+    async function pollScriptOutput() {
+      if (!scriptOutputRun) return;
+      const res = await scriptPost('logs', { id: scriptOutputRun, after: scriptOutputCursor, limit: 200 });
+      if (!res.ok) return;
+      const out = document.getElementById('scriptOutput');
+      if (res.dropped) out.textContent += '… (older output was dropped)\\n';
+      // textContent only: a script's output is arbitrary text, never markup.
+      for (const line of res.lines) out.textContent += line.text + '\\n';
+      scriptOutputCursor = res.cursor;
+      if (res.lines.length) out.scrollTop = out.scrollHeight;
+    }
+
+    // ---------------- Automation: JavaScript snippets (sandboxed) ----------------
+    const SANDBOX_DOC = __DECK_SANDBOX_DOC__;
+    let jsFrame = null;
+    let jsRunning = false;
+    let jsRunConn = null;
+
+    function jsOut(text) {
+      const out = document.getElementById('jsOutput');
+      out.classList.remove('hidden');
+      out.textContent += text + '\\n';
+      out.scrollTop = out.scrollHeight;
+    }
+
+    function jsSetState(text, running) {
+      jsRunning = running;
+      document.getElementById('jsState').textContent = text;
+      document.getElementById('jsRunBtn').disabled = running;
+      document.getElementById('jsStopBtn').disabled = !running;
+    }
+
+    function jsEnsureFrame() {
+      if (jsFrame) return jsFrame;
+      const frame = document.createElement('iframe');
+      // No allow-same-origin: an opaque origin, so the code cannot read this page,
+      // its storage or DECK_ACTION_TOKEN, and its requests carry Origin: null.
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.style.display = 'none';
+      frame.srcdoc = SANDBOX_DOC;
+      document.body.appendChild(frame);
+      jsFrame = frame;
+      return frame;
+    }
+
+    // The only way out of the sandbox: a fixed set of verbs, from our own frame.
+    window.addEventListener('message', async (event) => {
+      if (!jsFrame || event.source !== jsFrame.contentWindow) return;
+      const msg = event.data || {};
+      const reply = (id, value, error) => jsFrame.contentWindow.postMessage({ type: 'reply', id, value, error }, '*');
+      if (msg.type === 'log') { jsOut(String(msg.text).slice(0, 2000)); }
+      else if (msg.type === 'error') { jsOut('error: ' + String(msg.text).slice(0, 2000)); jsSetState('failed', false); }
+      else if (msg.type === 'done') { jsSetState('done', false); }
+      else if (msg.type === 'stopped') { jsSetState('stopped', false); }
+      else if (msg.type === 'send' && typeof msg.id === 'number') {
+        const st = ensureConn(jsRunConn || connId).status || {};
+        if (!jsRunning || !st.connected) { reply(msg.id, null, 'not connected'); return; }
+        try {
+          const res = await fetch('/api/tx', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: jsRunConn || connId, data: String(msg.data || '').slice(0, 4096),
+                                   line_ending: 'none', mode: 'ascii' })
+          });
+          const out = await res.json();
+          reply(msg.id, out.ok ? out.bytes : null, out.ok ? undefined : (out.error || 'send failed'));
+        } catch (err) { reply(msg.id, null, String(err)); }
+      }
+    });
+
+    function jsRun() {
+      const code = document.getElementById('jsCode').value;
+      if (!code.trim()) return;
+      const st = ensureConn(connId).status || {};
+      if (!st.connected) { jsOut('Connect a device first.'); return; }
+      document.getElementById('jsOutput').textContent = '';
+      jsRunConn = connId;
+      jsSetState('running', true);
+      const frame = jsEnsureFrame();
+      const start = () => frame.contentWindow.postMessage({ type: 'start', code }, '*');
+      if (frame.contentDocument === null && !frame.dataset.ready) {
+        frame.addEventListener('load', () => { frame.dataset.ready = '1'; start(); }, { once: true });
+        if (frame.dataset.loaded) start();
+      } else start();
+      frame.dataset.loaded = '1';
+    }
+
+    function jsStop() {
+      if (jsFrame) jsFrame.contentWindow.postMessage({ type: 'stop' }, '*');
+      jsSetState('stopped', false);
+    }
+
+    // What the device sends is forwarded into the running snippet.
+    function jsFeed(connIdOfEvent, text) {
+      if (jsRunning && jsFrame && connIdOfEvent === jsRunConn) {
+        jsFrame.contentWindow.postMessage({ type: 'data', text }, '*');
+      }
     }
 
     // ---------------- MCP page ----------------
