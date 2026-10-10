@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- Linux frozen bundles now include the Qt WebEngine backend and open the
+  dashboard in a native window by default.
+
+## Unreleased
+
+- Devices that are not a physical UART: `unix:///path` (a local stream socket)
+  next to `tcp://` and `udp://`. They have no baud, DTR/RTS, reset, bootloader
+  or flashing, and every client says so instead of trying.
+- SSH devices (Linux and macOS): pair a remote Unix socket once, then connect
+  to `ssh-socket://<name>` like any port. The hub owns the `ssh -N -L` tunnel,
+  reconnects with backoff and reports `connected / reconnecting / auth_failed /
+  host_key_changed / passphrase_required / socket_missing / unreachable`.
+  Pairing pins the host key after you compare its fingerprint, installs a key
+  made for that device only (it can open socket tunnels and run a few fixed
+  verbs, never a shell), and never stores the password. An optional passphrase
+  on the device key is asked on each connect and never stored. Forgetting a
+  device removes exactly its key line from the host. The Web/App dashboard has
+  a grouped port picker, a pairing wizard and a link-state fix button; MCP
+  lists `ssh_devices` and connects by name (pairing is dashboard-only).
+- Hub hardening: sockets are owner-only and a connecting process must run as the
+  same user (`SO_PEERCRED`); failed claims carry a machine-readable `code`; the
+  hub refuses writes while a device link is down instead of half-sending.
+
 ## 0.2.1 (2026-10-03)
 
 - Linux AppImage: the app could not start its hub on distributions whose

@@ -30,7 +30,7 @@ No Python needed.
 | Windows 10/11 (x64) | `SerialDeck-<version>-Setup.exe` | Per-user install, no admin. A portable `-win-x64.zip` is also provided |
 | macOS 15+ (Apple silicon) | `SerialDeck-<version>-macos-arm64.dmg` | Drag *Serial Deck* to Applications |
 | macOS 15+ (Intel) | `SerialDeck-<version>-macos-x86_64.dmg` | |
-| Linux x86_64 (Ubuntu 22.04+, Debian 12+) | `serial-deck_<version>_amd64.deb` or `SerialDeck-<version>-x86_64.AppImage` | Opens the dashboard in your browser |
+| Linux x86_64 (Ubuntu 22.04+, Debian 12+) | `serial-deck_<version>_amd64.deb` or `SerialDeck-<version>-x86_64.AppImage` | Opens the dashboard in a native window |
 
 The app is the Web dashboard in its own window; on Linux it uses your browser.
 Every installer also ships `serial-deck-cli` for the hub, CLI and MCP server
@@ -121,6 +121,29 @@ is stored in a file only your user can read. Set `SERIAL_DECK_IPC=tcp` to use
 that transport on any OS. Hub files live in a private per-user directory
 (`%LOCALAPPDATA%\serial-deck`, `/run/user/<uid>/serial-deck` or
 `/tmp/serial-deck-<uid>`); `SERIAL_DECK_RUNTIME_DIR` overrides it.
+
+## Devices that are not a UART
+
+Type these in the port box ("Network (raw)") or pass them to any client:
+
+| Endpoint | What it is |
+|---|---|
+| `tcp://host:port`, `udp://host:port` | UART-over-IP (ser2net, ESP-Link, telnet consoles) |
+| `unix:///path/to.sock` | A local stream socket (Linux, macOS) |
+| `ssh-socket://name` | A paired remote Unix socket behind an SSH tunnel (Linux, macOS) |
+
+None of them has a baud, DTR/RTS, reset, bootloader or flashing.
+
+**SSH devices.** Choose **+ Add SSH device...** in the port list, enter the
+host, user and the absolute path of the Unix socket on it, compare the host
+fingerprint, and sign in once with a password or an existing key. Serial Deck
+then keeps a key of its own for that device in `~/.config/serial-deck/keys/`
+(`SERIAL_DECK_CONFIG` overrides the location). On the host that key is limited
+to socket tunnels and a few fixed verbs; it cannot start a shell. The password
+is used once and never stored. If the host key changes, connecting is blocked
+until you pair again on purpose. **Forget device...** removes the key from the
+host and the profile from this machine. Needs the `ssh`, `ssh-keygen` and
+`ssh-keyscan` programs on your PATH (OpenSSH).
 
 ## Flashing ESP32 firmware
 

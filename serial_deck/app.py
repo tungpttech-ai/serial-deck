@@ -334,8 +334,6 @@ def use_browser(args: argparse.Namespace, runtime_check: Callable[[], str | None
     """Why this launch uses the browser instead of a window, or None for a window."""
     if getattr(args, "browser", False):
         return "requested with --browser"
-    if runtime.frozen() and sys.platform.startswith("linux"):
-        return "Linux app bundles use your browser"  # no portable GTK/WebKit in a bundle
     if runtime.frozen():
         return runtime_check()  # e.g. no WebView2 runtime: fall back instead of failing
     return None
@@ -487,9 +485,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Installed {install_desktop_entry()}")
         return 0
     if args.check_runtime:
-        if runtime.frozen() and sys.platform.startswith("linux"):
-            print("browser mode: this bundle opens the dashboard in your browser")
-            return 0
         error = check_webview_runtime()
         print(error or "pywebview runtime OK")
         return 3 if error else 0

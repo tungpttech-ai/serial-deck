@@ -320,9 +320,7 @@ def main() -> int:
             gui = run(args.gui, env, "app", "--check-runtime", check=False)
             print(f"gui runtime: {gui.stdout.strip() or gui.stderr.strip()}")
             assert gui.returncode == 0, "the app's window runtime is not usable"
-            if sys.platform.startswith("linux"):
-                assert "browser mode" in gui.stdout, gui.stdout
-            if args.window and not sys.platform.startswith("linux"):
+            if args.window:
                 status_file = work / "window-status.json"
                 window = run(args.gui, dict(env, SERIAL_DECK_STATUS_FILE=str(status_file)),
                              "app", "--smoke-test", check=False, timeout=120)

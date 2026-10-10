@@ -32,6 +32,17 @@ for dist in ("esptool", "mcp", "pydantic", "pydantic_core", "anyio", "pyserial",
         datas += copy_metadata(dist)
     except Exception:
         pass
+# Linux releases use pywebview's Qt backend so the frozen app can open a native
+# window without depending on the build host's Python GObject installation.
+if sys.platform.startswith("linux"):
+    for package in ("PyQt6", "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets"):
+        try:
+            d, b, h = collect_all(package)
+            datas += d
+            binaries += b
+            hiddenimports += h
+        except Exception:
+            pass
 hiddenimports += collect_submodules("serial_deck")
 hiddenimports += collect_submodules("serial.tools")
 if IS_WIN:
