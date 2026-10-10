@@ -436,7 +436,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq dpkg-dev fakeroot desktop-file-utils xvfb xauth
+          sudo apt-get install -y -qq dpkg-dev fakeroot desktop-file-utils xvfb xauth libegl1 libgl1 libxkbcommon0 libnss3
           python -m pip install --require-hashes -r packaging/requirements/linux-x86_64.txt
           python -m pip install --no-deps --no-build-isolation .
       - name: Freeze
