@@ -330,7 +330,7 @@ def main() -> int:
                 except (OSError, ValueError):
                     status = {}
                 assert window.returncode == 0 and status.get("window_ok") is True, \
-                    f"app window did not load the dashboard (exit {window.returncode}, status {status})"
+                    f"app window did not load the dashboard (exit {window.returncode}, status {status}, stdout={window.stdout[-1000:]!r}, stderr={window.stderr[-2000:]!r})"
                 print("app window loaded the dashboard")
 
         stop_group(web)
