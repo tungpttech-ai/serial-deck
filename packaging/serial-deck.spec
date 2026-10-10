@@ -35,7 +35,7 @@ for dist in ("esptool", "mcp", "pydantic", "pydantic_core", "anyio", "pyserial",
 # Linux releases use pywebview's Qt backend so the frozen app can open a native
 # window without depending on the build host's Python GObject installation.
 if sys.platform.startswith("linux"):
-    for package in ("PyQt6", "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets"):
+    for package in ("PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets"):
         try:
             d, b, h = collect_all(package)
             datas += d
