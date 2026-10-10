@@ -14,6 +14,10 @@ app="opt/serial-deck"
 install -d -m 0755 "$root/DEBIAN" "$root/$app" "$root/usr/bin" \
     "$root/usr/share/applications" "$root/usr/share/doc/serial-deck"
 cp -a "$bundle/." "$root/$app/"
+# Qt WebEngine can use the distro PulseAudio ABI.  Keeping PyInstaller's
+# private libpulse copy makes dpkg-shlibdeps chase libpulsecommon, which has no
+# Debian shlibs metadata; let the package dependency resolve libpulse0 instead.
+rm -f "$root/$app/_internal/libpulse.so.0"
 ln -s "/$app/serial-deck" "$root/usr/bin/serial-deck"
 ln -s "/$app/serial-deck-cli" "$root/usr/bin/serial-deck-cli"
 install -m 0644 "$here/serial-deck.desktop" "$root/usr/share/applications/serial-deck.desktop"
