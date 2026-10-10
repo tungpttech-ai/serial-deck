@@ -13,14 +13,16 @@ from contextlib import ExitStack
 from pathlib import Path
 
 try:
-    from . import ipc, ssh_socket
+    from . import ipc, script_supervisor, scripting, ssh_socket
     from .hub import UartHub
-    from .uart_client import is_device_port, is_non_serial_port, port_identity
+    from .uart_client import is_device_port, is_non_serial_port, port_identity, usb_identity
 except ImportError:
     import ipc
+    import script_supervisor
+    import scripting
     import ssh_socket
     from hub import UartHub
-    from uart_client import is_device_port, is_non_serial_port, port_identity
+    from uart_client import is_device_port, is_non_serial_port, port_identity, usb_identity
 
 
 PROTOCOL = "serial-deck-multiport-v1"
@@ -28,6 +30,12 @@ PROTOCOL = "serial-deck-multiport-v1"
 # password or passphrase: those requests are never logged and the secret is
 # dropped after the one ssh process that needs it.
 SSH_ACTIONS = ("ssh_devices", "ssh_fingerprint", "ssh_pair", "ssh_forget", "ssh_retry", "ssh_unlock")
+# User scripts run as supervised processes owned by this daemon (script_supervisor).
+SCRIPT_ACTIONS = ("script_list", "script_run", "script_stop", "script_status", "script_logs",
+                  "script_autorun")
+# A script run started by the hub itself may be stopped once nobody else uses its
+# port; give its runner this long to attach before judging.
+AUTORUN_GRACE_S = 10.0
 # What a claim does when the port is live at another baud: keep the live
 # baud (legacy default), refuse so the UI can ask, or retime every client.
 BAUD_CONFLICT_POLICIES = ("join", "error", "retime")
@@ -229,6 +237,7 @@ class MultiPortHub(UartHub):
         self.lock: ipc.FileLock | None = None
         self.closing = False  # set once a shutdown is accepted; refuses new work
         self.ssh_store = ssh_socket.DeviceStore()
+        self.scripts = script_supervisor.ScriptSupervisor(str(self.socket_path))
 
     def start(self) -> None:
         ipc.private_dir(self.socket_path.parent)
@@ -316,8 +325,20 @@ class MultiPortHub(UartHub):
                 if created:
                     channel.close()
                 raise
-            return {**result, "protocol": PROTOCOL, "pid": os.getpid(),
-                    "service_socket": str(self.socket_path), "channel_socket": str(channel.socket_path)}
+            response = {**result, "protocol": PROTOCOL, "pid": os.getpid(),
+                        "service_socket": str(self.socket_path), "channel_socket": str(channel.socket_path)}
+        if result.get("claimed"):
+            # The port just opened (first claim, or reopened after a loss). Outside
+            # channels_lock: a runner claims the same port and must not wait on us.
+            self._start_autoruns(key, int(result.get("baud", baud)))
+        return response
+
+    def _start_autoruns(self, key: str, baud: int) -> None:
+        try:
+            identity = usb_identity(key) if not is_non_serial_port(key) else {}
+            self.scripts.on_channel_opened(key, baud, identity)
+        except Exception:
+            pass  # a script problem must never fail a claim
 
     def _handle_control(self, client: socket.socket, request: dict | None = None) -> None:
         try:
@@ -347,11 +368,15 @@ class MultiPortHub(UartHub):
                 # the caller waits for) is sent *before* the run loop may tear the
                 # sockets down; only then is the stop released.
                 self.request_shutdown(commit=False)
+                self.scripts.stop_all()
                 reply(client, {"ok": True, "stopping": True, "pid": os.getpid()})
                 self.stop.set()
                 return
             if action in SSH_ACTIONS:
                 reply(client, self._ssh_action(action, request))
+                return
+            if action in SCRIPT_ACTIONS:
+                reply(client, self._script_action(action, request))
                 return
             if action in ("status", "scan", "subscribe") and "port" not in request:
                 super()._handle_control(client, request)
@@ -369,6 +394,39 @@ class MultiPortHub(UartHub):
                 channel._handle_control(client, request)
         except Exception as exc:
             reply(client, {"ok": False, "error": str(exc)})
+
+    def _script_action(self, action: str, request: dict) -> dict:
+        try:
+            if action == "script_list":
+                return {"ok": True, "scripts": scripting.list_scripts(),
+                        "autorun": self.scripts.autorun_rules(), "folder": str(scripting.scripts_dir())}
+            if action == "script_status":
+                return {"ok": True, "runs": self.scripts.status()}
+            if action == "script_run":
+                port = request.get("port")
+                if not isinstance(port, str) or not (is_device_port(port) or is_non_serial_port(port)):
+                    raise ValueError("script_run needs a UART path or a device endpoint")
+                baud = request.get("baud", 115200)
+                run = self.scripts.start(str(request.get("name", "")), port, baud)
+                return {"ok": True, "run": run.summary()}
+            if action == "script_stop":
+                return {"ok": True, "run": self.scripts.stop(str(request.get("id", ""))).summary()}
+            if action == "script_logs":
+                run = self.scripts.get(str(request.get("id", "")))
+                after = request.get("after", 0)
+                limit = request.get("limit", 200)
+                lines, cursor, dropped = run.read_logs(after if type(after) is int else 0,
+                                                       min(limit, 500) if type(limit) is int else 200)
+                return {"ok": True, "run": run.summary(), "lines": lines, "cursor": cursor, "dropped": dropped}
+            # script_autorun
+            rules = self.scripts.set_autorun(str(request.get("name", "")), bool(request.get("enabled")),
+                                             request.get("match") if isinstance(request.get("match"), dict) else None,
+                                             request.get("baud") if type(request.get("baud")) is int else None)
+            return {"ok": True, "autorun": rules}
+        except KeyError as exc:
+            return {"ok": False, "error": str(exc.args[0]) if exc.args else "not found"}
+        except (ValueError, RuntimeError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     def _ssh_channel(self, name: str) -> PortChannel | None:
         with self.channels_lock:
@@ -431,6 +489,32 @@ class MultiPortHub(UartHub):
         except ssh_socket.SshSocketError as exc:
             return {"ok": False, "error": str(exc), "code": exc.state}
 
+    def real_clients(self, channel: PortChannel) -> int:
+        """Data clients on a channel that are not scripts this hub started itself.
+
+        A runner is a data client like a dashboard, so counting it would keep every
+        autorun port open (and refuse `hub --shutdown`) forever. Scripts a user
+        started by hand count as clients: they hold the port until they finish.
+        """
+        with channel.clients_lock:
+            total = len(channel.clients)
+        autoruns = sum(1 for run in self.scripts.running_on(channel.port) if run.autorun)
+        return max(0, total - autoruns)
+
+    def stop_idle_autoruns(self) -> None:
+        """Stop autorun scripts on ports nobody else is using (called by the run loop)."""
+        stale = []
+        with self.channels_lock:
+            for channel in self.channels.values():
+                if not channel.port or channel.flashing:
+                    continue
+                autoruns = [r for r in self.scripts.running_on(channel.port) if r.autorun]
+                if (autoruns and self.real_clients(channel) == 0
+                        and all(time.time() - r.started > AUTORUN_GRACE_S for r in autoruns)):
+                    stale.append(channel.port)
+        for port in stale:  # stopping waits on the process: never under channels_lock
+            self.scripts.stop_autoruns_on(port)
+
     def request_shutdown(self, require_idle: bool = True, commit: bool = True) -> None:
         """Refuse while clients or a flash are active; otherwise stop accepting work.
 
@@ -440,7 +524,7 @@ class MultiPortHub(UartHub):
         with self.channels_lock, ExitStack() as stack:
             for channel in self.channels.values():
                 stack.enter_context(channel.gate)
-            if any(c.flashing or (require_idle and c.clients) for c in self.channels.values()):
+            if any(c.flashing or (require_idle and self.real_clients(c)) for c in self.channels.values()):
                 raise RuntimeError("cannot shut down while clients or flash are active")
             self.closing = True
             if commit:
@@ -485,6 +569,7 @@ class MultiPortHub(UartHub):
             while not self.stop.is_set():
                 try:
                     self.stop.wait(0.25)
+                    self.stop_idle_autoruns()
                     self.reap_idle()
                     self._publish_status()
                 except KeyboardInterrupt:
@@ -496,6 +581,7 @@ class MultiPortHub(UartHub):
             self.close()
 
     def close(self) -> None:
+        self.scripts.stop_all()
         with self.channels_lock:
             self.stop.set()
             for channel in self.channels.values():

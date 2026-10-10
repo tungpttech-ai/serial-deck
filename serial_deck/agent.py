@@ -854,6 +854,45 @@ class DeckAgent:
         session.note(f"button {button} {action}")
         return session.request("input.button", {"button": button, "action": action}, timeout)
 
+    # User scripts -----------------------------------------------------------
+    # Scripts are Python files the user put in the scripts folder; the hub runs
+    # them as separate processes. This surface can list, start and stop them and
+    # read their output. It cannot create or change a script, and a script cannot
+    # reset, enter the bootloader or flash (those stay behind `hardware`).
+
+    def _script_control(self, action: str, **payload: Any) -> dict[str, Any]:
+        try:
+            return self._root().request_control(action, **payload)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise AgentError("invalid_argument" if "script" in str(exc).lower() else "transport_unavailable",
+                             redact(str(exc))) from exc
+
+    def script_list(self) -> dict[str, Any]:
+        reply = self._script_control("script_list")
+        return {"scripts": reply["scripts"], "autorun": reply["autorun"], "folder": reply["folder"],
+                "runs": self._script_control("script_status")["runs"]}
+
+    def script_run(self, name: str, port: str | None, baud: int | None) -> dict[str, Any]:
+        self.require("interact")
+        session = self.session(port)
+        session.note(f"script run {name}")
+        reply = self._script_control("script_run", name=name, port=session.port, baud=baud or session.manager.baud)
+        return {"run": reply["run"], "next": "poll script_status(run_id) for its output"}
+
+    def script_stop(self, run_id: str) -> dict[str, Any]:
+        self.require("interact")
+        return {"run": self._script_control("script_stop", id=run_id)["run"]}
+
+    def script_status(self, run_id: str | None, after: int, limit: int) -> dict[str, Any]:
+        if run_id is None:
+            return {"runs": self._script_control("script_status")["runs"]}
+        reply = self._script_control("script_logs", id=run_id, after=after, limit=limit)
+        # Script output is untrusted text from a program the user wrote: redact it
+        # like device logs and let the caller treat it as data.
+        return {"run": reply["run"], "lines": [{"seq": item["seq"], "text": redact(item["text"])}
+                                               for item in reply["lines"]],
+                "cursor": reply["cursor"], "dropped": reply["dropped"]}
+
     def show_info(self, port: str | None, timeout: float) -> dict[str, Any]:
         self.require("interact")
         session = self.session(port)

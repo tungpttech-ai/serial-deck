@@ -25,7 +25,8 @@ except ImportError:
 
 # Control actions served by the daemon's root socket, never by a channel.
 ROOT_ACTIONS = ("claim", "scan", "shutdown", "ssh_devices", "ssh_fingerprint", "ssh_pair",
-                "ssh_forget", "ssh_retry", "ssh_unlock")
+                "ssh_forget", "ssh_retry", "ssh_unlock", "script_list", "script_run", "script_stop",
+                "script_status", "script_logs", "script_autorun")
 MULTIPORT_PROTOCOL = "serial-deck-multiport-v1"
 DEFAULT_SOCKET = ipc.default_hub_path()
 

@@ -17,6 +17,7 @@ COMMANDS = {
     "hub": ("hub", "the shared UART hub daemon (--status, --shutdown)"),
     "flash": ("flash", "flash an ESP-IDF build"),
     "mcp": ("mcp_server", "MCP server for AI agents (stdio)"),
+    "script": ("scripting", "run user scripts against a device (list, run, start, stop, status)"),
     "console": ("uart_client", "terminal console: monitor, hello, query, button, reset, ..."),
 }
 
