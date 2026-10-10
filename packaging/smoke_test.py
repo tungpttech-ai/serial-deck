@@ -27,7 +27,8 @@ DEADLINE = 60.0
 def clean_env(runtime: Path, work: Path) -> dict[str, str]:
     keep = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
             "USERNAME", "USERDOMAIN", "LANG", "DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "COMSPEC",
-            "APPIMAGE_EXTRACT_AND_RUN")
+            "APPIMAGE_EXTRACT_AND_RUN", "SERIAL_DECK_NO_BROWSER_FALLBACK",
+            "QT_QPA_PLATFORM", "QTWEBENGINE_CHROMIUM_FLAGS")
     env = {k: v for k, v in os.environ.items() if k in keep}
     # A PATH holding only an empty directory plus the OS's own tools; any
     # python/esptool that is still reachable fails the test (the bundle must not
