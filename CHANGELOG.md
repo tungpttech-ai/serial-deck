@@ -2,6 +2,14 @@
 
 ## 0.3.0 (2026-10-28)
 
+- Console P1: tag filter is a searchable multi-select over the tags seen (with counts);
+  **Presets** save and reapply a filter (text, regex, tags, severities) in the browser;
+  severity chips persist; an **FSM timeline** above Control Events lists real transitions
+  (`STATE_A -> STATE_B` from fsm-tagged log lines, and status changes) with time in the
+  previous state when both ends are measurable, and a click jumps to the log line; the split
+  pane has a draggable, keyboard-resizable divider whose width is remembered; Ctrl+F focuses
+  Find; a shortcuts popover lists the keys. Menus close on outside click or Esc, one at a time.
+  Not done: per-subsystem tag colours, filtered-vs-full export choice.
 - Console-first dashboard (P0 of `SERIAL_DECK_UI_UX_SPEC.md`): one header row (port, baud,
   mode, connection tabs, state), a slim FSM/target bar with a **Device Actions** menu
   (Reset, Bootloader, DTR, RTS, with the real line state), and a status bar. Console gets

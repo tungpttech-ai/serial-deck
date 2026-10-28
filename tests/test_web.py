@@ -226,7 +226,8 @@ class ConsoleUxTest(unittest.TestCase):
     def test_filter_and_find_are_separate_and_regex_is_validated(self):
         self.assertIn('id="logSearchInput"', HTML_PAGE)  # filter: hides lines
         self.assertIn('id="findInput"', HTML_PAGE)  # find: highlights, hides nothing
-        self.assertIn('id="tagFilterInput"', HTML_PAGE)
+        self.assertIn('id="tagMenu"', HTML_PAGE)  # searchable multi-select over observed tags
+        self.assertIn('id="tagSearch"', HTML_PAGE)
         self.assertIn("new RegExp(text, 'i')", HTML_PAGE)
         self.assertIn('id="filterError"', HTML_PAGE)
 
@@ -247,7 +248,7 @@ class ConsoleUxTest(unittest.TestCase):
         self.assertIn("requestAnimationFrame(flushRows)", HTML_PAGE)
 
     def test_collapsing_tx_keeps_the_draft(self):
-        body = HTML_PAGE.split("function applyTxCollapsed()", 1)[1].split("// ---- Device Actions", 1)[0]
+        body = HTML_PAGE.split("function applyTxCollapsed()", 1)[1].split("function toggleTx()", 1)[0]
         self.assertNotIn(".value", body)  # only hides the row, never clears the input
         self.assertIn('id="txInput"', HTML_PAGE)
         self.assertIn("txHistoryKey(event)", HTML_PAGE)
@@ -262,6 +263,30 @@ class ConsoleUxTest(unittest.TestCase):
     def test_status_bar_uses_measured_values_only(self):
         self.assertIn("c.rate = c.lines - c.lastLines", HTML_PAGE)  # a real counter
         self.assertNotIn("Drops", HTML_PAGE.split('id="statusBar"', 1)[1].split("</div>", 1)[0])
+
+
+class ConsoleP1Test(unittest.TestCase):
+    def test_fsm_timeline_only_reads_real_transitions(self):
+        self.assertIn('id="fsmTimeline"', HTML_PAGE)
+        self.assertIn("FSM_ARROW_RE", HTML_PAGE)
+        self.assertIn("/fsm/i.test(p.tag)", HTML_PAGE)  # only lines from an fsm-tagged source
+        self.assertIn("prev.to === t.from", HTML_PAGE)  # a duration only when the previous state matches
+
+    def test_split_pane_is_resizable_and_remembered(self):
+        self.assertIn('id="splitHandle"', HTML_PAGE)
+        self.assertIn("serialdeck.splitWidth", HTML_PAGE)
+        self.assertIn("ArrowLeft", HTML_PAGE.split("setupSplitResize", 1)[1])  # keyboard resize too
+
+    def test_filter_presets_and_levels_persist_without_connection_state(self):
+        self.assertIn("serialdeck.filterPresets", HTML_PAGE)
+        self.assertIn("serialdeck.levels", HTML_PAGE)
+        preset = HTML_PAGE.split("function currentPreset(name)", 1)[1].split("}", 1)[0]
+        for key in ("filter", "regex", "tags", "levels"):
+            self.assertIn(key, preset)
+        self.assertNotIn("connected", preset)  # never a stale session
+
+    def test_menus_survive_their_own_rerender(self):
+        self.assertIn("e.composedPath()", HTML_PAGE)  # clicking a re-rendered tag row must not close the menu
 
 
 class SmallWindowLogLayoutTest(unittest.TestCase):

@@ -2108,6 +2108,25 @@ HTML_PAGE = """<!DOCTYPE html>
     .da-item .da-note { margin-left: auto; font-size: 10px; color: #849396; }
     .da-item:disabled { opacity: .4; cursor: not-allowed; }
     .da-danger:hover { background: rgba(255,107,97,.18); color: #ff6b61; }
+    .pop > summary { list-style: none; }
+    .pop > summary::-webkit-details-marker { display: none; }
+    .pop[open] > summary { background: #3b494c; }
+    .pop > summary:focus-visible { outline: 2px solid #00e5ff; outline-offset: 2px; }
+    .pop-panel { position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 30; padding: 6px; background: #1e2024;
+      border: 1px solid #3b494c; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+    .tag-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 6px; border-radius: 3px; text-align: left; color: #bac9cc; }
+    .tag-item:hover { background: #3b494c; }
+    .tag-item.on { color: #e2e2e8; }
+    .tag-item.on i { color: #00e5ff; }
+    .kb { display: flex; align-items: center; gap: 4px; padding: 1px 0; color: #bac9cc; }
+    .kb span { margin-left: auto; color: #e2e2e8; }
+    kbd { padding: 0 5px; border: 1px solid #3b494c; border-radius: 3px; background: #111318; font-size: 10px; }
+    .tl-row { display: flex; align-items: baseline; gap: .6rem; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
+    .tl-row:hover { background: rgba(255,255,255,.05); }
+    .tl-state { color: #7fc6d1; }
+    .tl-to { color: #e2e2e8; font-weight: 700; }
+    .tl-dur { color: #ffb778; }
+    .tl-src { margin-left: auto; font-size: 10px; color: #849396; }
     #deviceActions > summary:focus-visible { outline: 2px solid #00e5ff; outline-offset: 2px; }
   </style>
 </head>
@@ -2209,7 +2228,7 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <details id="deviceActions" class="relative">
+    <details id="deviceActions" class="pop relative">
       <summary class="list-none cursor-pointer select-none px-2.5 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text flex items-center space-x-1.5" title="Reset, bootloader and the DTR / RTS lines">
         <i class="fa-solid fa-sliders text-[10px]" aria-hidden="true"></i><span>Device Actions</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
       </summary>
@@ -2453,11 +2472,29 @@ HTML_PAGE = """<!DOCTYPE html>
             <button type="button" class="tb-toggle" aria-label="Next match" title="Next match (Enter)" onclick="findStep(1)"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>
           </div>
 
-          <div class="tb-group" title="Show only lines whose tag contains this text (tags seen so far are suggested)">
-            <i class="fa-solid fa-tag text-[10px] text-brand-muted" aria-hidden="true"></i>
-            <input id="tagFilterInput" list="tagList" oninput="onFilterInput()" type="text" autocomplete="off" spellcheck="false" aria-label="Filter by tag" placeholder="Tag…" class="tb-input mono w-28">
-            <datalist id="tagList"></datalist>
-          </div>
+          <details id="tagMenu" class="pop relative">
+            <summary class="tb-btn list-none cursor-pointer select-none" title="Show only lines from the chosen ESP-IDF tags (tags seen so far)">
+              <i class="fa-solid fa-tag text-[10px] text-brand-muted" aria-hidden="true"></i><span id="tagSummary" class="max-w-[9rem] truncate">All tags</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+            </summary>
+            <div class="pop-panel w-64">
+              <input id="tagSearch" oninput="refreshTagList()" type="text" autocomplete="off" spellcheck="false" aria-label="Search tags" placeholder="Search tags…" class="w-full mb-1 px-2 py-1 bg-brand-surfaceAlt border border-brand-border rounded mono text-xs focus:outline-none focus:border-brand-accent">
+              <div id="tagList" role="listbox" aria-multiselectable="true" class="max-h-60 overflow-y-auto"></div>
+              <button type="button" onclick="clearTags()" class="da-item mt-1 border-t border-brand-border"><i class="fa-solid fa-eraser" aria-hidden="true"></i><span>Clear tag filter</span></button>
+            </div>
+          </details>
+
+          <details id="presetMenu" class="pop relative">
+            <summary class="tb-btn list-none cursor-pointer select-none" title="Save the current filter (text, regex, tags, severities) and reuse it later">
+              <i class="fa-solid fa-bookmark text-[10px] text-brand-muted" aria-hidden="true"></i><span>Presets</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+            </summary>
+            <div class="pop-panel w-64">
+              <div id="presetList" class="max-h-48 overflow-y-auto"></div>
+              <form onsubmit="event.preventDefault();savePreset()" class="flex gap-1 mt-1 pt-1 border-t border-brand-border">
+                <input id="presetName" type="text" maxlength="40" autocomplete="off" aria-label="Preset name" placeholder="Name for current filter" class="flex-1 min-w-0 px-2 py-1 bg-brand-surfaceAlt border border-brand-border rounded mono text-xs focus:outline-none focus:border-brand-accent">
+                <button type="submit" class="tb-btn">Save</button>
+              </form>
+            </div>
+          </details>
 
           <div id="levelFilters" role="group" aria-label="Severity filters" class="flex items-center gap-1 mono text-[11px]">
             <button onclick="toggleLevelFilter('E')" id="lvl-E" class="chip chip-E" aria-pressed="true" title="Errors">E</button>
@@ -2478,6 +2515,21 @@ HTML_PAGE = """<!DOCTYPE html>
           <button id="pauseBtn" type="button" aria-pressed="false" onclick="togglePause()" class="tb-btn" title="Pause: freeze the lines shown. Capture keeps running; resume shows everything.">
             <i class="fa-solid fa-pause" aria-hidden="true"></i><span id="pauseLabel">Pause</span>
           </button>
+          <details id="helpMenu" class="pop relative ml-auto">
+            <summary class="tb-btn list-none cursor-pointer select-none" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><i class="fa-regular fa-keyboard" aria-hidden="true"></i></summary>
+            <div class="pop-panel w-72 right-0 left-auto text-[11px] leading-relaxed">
+              <div class="font-bold text-brand-text mb-1">Console</div>
+              <div class="kb"><kbd>Ctrl</kbd>+<kbd>F</kbd><span>Find in view</span></div>
+              <div class="kb"><kbd>Enter</kbd> / <kbd>Shift+Enter</kbd><span>Next / previous match</span></div>
+              <div class="kb"><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd><span>Select line (Follow off)</span></div>
+              <div class="kb"><kbd>Enter</kbd><span>Line details</span></div>
+              <div class="kb"><kbd>C</kbd><span>Copy selected line</span></div>
+              <div class="kb"><kbd>Esc</kbd><span>Close details / menu</span></div>
+              <div class="font-bold text-brand-text mt-2 mb-1">TX box</div>
+              <div class="kb"><kbd>Enter</kbd><span>Send</span></div>
+              <div class="kb"><kbd>↑</kbd> <kbd>↓</kbd><span>Send history</span></div>
+            </div>
+          </details>
           <button id="pauseScrollBtn" type="button" aria-pressed="true" onclick="toggleAutoScroll()" class="tb-btn" title="Follow: keep the newest line in view. Scrolling up turns it off.">
             <i class="fa-solid fa-arrows-up-down" aria-hidden="true"></i><span id="scrollStateLabel">Follow</span>
           </button>
@@ -2487,7 +2539,8 @@ HTML_PAGE = """<!DOCTYPE html>
       <!-- VIEW 1: CONSOLE LOG STREAM (optionally split to watch a 2nd connection) -->
       <div id="viewLogs" class="flex-1 flex overflow-hidden relative">
         <div id="logsPanePrimary" role="log" aria-label="Console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-[#0c0e12]"></div>
-        <div id="logsPaneSplit" class="hidden flex-1 flex-col overflow-hidden border-l border-brand-border">
+        <div id="splitHandle" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize split pane (drag, or use the arrow keys)" title="Drag to resize" class="hidden shrink-0 w-1.5 cursor-col-resize bg-brand-border hover:bg-brand-accent focus-visible:bg-brand-accent"></div>
+        <div id="logsPaneSplit" class="hidden flex-1 flex-col overflow-hidden">
           <div class="flex items-center justify-between px-2 py-1.5 bg-brand-surfaceAlt/60 border-b border-brand-border text-[11px] shrink-0">
             <select id="splitConnSelect" aria-label="Connection shown in the split pane" onchange="onSplitConnChange(this.value)" class="bg-transparent text-brand-text mono text-[11px] focus:outline-none cursor-pointer"></select>
             <div class="flex items-center space-x-2">
@@ -2501,6 +2554,21 @@ HTML_PAGE = """<!DOCTYPE html>
           <i class="fa-solid fa-arrow-down" aria-hidden="true"></i><span>Jump to latest</span>
         </button>
       </div>
+
+      <!-- FSM TIMELINE: shown with the Events tab; built only from real transitions -->
+      <section id="viewTimeline" class="hidden shrink-0 max-h-[45%] flex flex-col bg-[#0c0e12] border-b border-brand-border">
+        <div class="flex items-center gap-2 px-3 py-1.5 text-[11px] bg-brand-surfaceAlt/60 border-b border-brand-border">
+          <i class="fa-solid fa-diagram-project text-brand-purple" aria-hidden="true"></i>
+          <span class="font-bold uppercase tracking-wider">FSM timeline</span>
+          <span id="fsmTimelineCount" class="tab-count">0</span>
+          <span id="fsmJumpNote" class="text-brand-warning" role="status"></span>
+          <span class="ml-auto text-brand-muted">From log lines like <span class="mono">STATE_A -&gt; STATE_B</span> and status changes. Click a row to jump to its log line.</span>
+        </div>
+        <div id="fsmTimeline" class="overflow-y-auto px-2 py-1 mono text-xs">
+          <div id="fsmTimelineEmpty" class="text-brand-muted px-1 py-2">No transitions seen yet.</div>
+          <div id="fsmTimelineRows"></div>
+        </div>
+      </section>
 
       <!-- VIEW 2: CONTROL EVENTS -->
       <div id="viewEvents" class="flex-1 overflow-y-auto p-3 mono text-xs leading-relaxed space-y-1.5 select-text bg-[#0c0e12] hidden"></div>
@@ -2815,7 +2883,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function ensureConn(id) {
       if (!conns[id]) {
         conns[id] = { logsBuffer: [], eventsBuffer: [], rawChunks: [], rawBytes: 0, status: {}, eventSource: null,
-          termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Set(), trimmed: 0,
+          termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Map(), trimmed: 0, fsmLog: [], lastFsm: undefined,
           lines: 0, lastLines: 0, rate: 0, connecting: false, error: false };
         if (!connOrder.includes(id)) connOrder.push(id);
       }
@@ -2903,6 +2971,8 @@ HTML_PAGE = """<!DOCTYPE html>
       activeTab = tab;
       document.getElementById('viewLogs').classList.toggle('hidden', tab !== 'logs');
       document.getElementById('viewEvents').classList.toggle('hidden', tab !== 'events');
+      document.getElementById('viewTimeline').classList.toggle('hidden', tab !== 'events');
+      if (tab === 'events') renderTimeline();
       document.getElementById('viewInspector').classList.toggle('hidden', tab !== 'inspector');
       document.getElementById('viewTerminal').classList.toggle('hidden', tab !== 'terminal');
       const ids = { logs: 'tabLogsBtn', events: 'tabEventsBtn', inspector: 'tabInspectorBtn', terminal: 'tabTerminalBtn' };
@@ -2925,7 +2995,7 @@ HTML_PAGE = """<!DOCTYPE html>
       try { return localStorage.getItem('serialdeck.viewMode') === 'raw' ? 'raw' : 'structured'; } catch (err) { return 'structured'; }
     })();
     const regexMode = { filter: false, find: false };
-    let filterFn = null, findFn = null, tagNeedle = '';
+    let filterFn = null, findFn = null;
     let filterTimer = null, flushScheduled = false, tagsDirty = false;
     const pendingRows = { logsPanePrimary: [], logsPaneSplitContent: [] };
 
@@ -2942,7 +3012,11 @@ HTML_PAGE = """<!DOCTYPE html>
     function adopt(conn, entry) {
       entry._n = ++conn.seq;
       const p = parsedLine(entry);
-      if (p && !conn.tags.has(p.tag) && conn.tags.size < 500) { conn.tags.add(p.tag); tagsDirty = true; }
+      if (p) {
+        if (conn.tags.has(p.tag)) conn.tags.set(p.tag, conn.tags.get(p.tag) + 1);
+        else if (conn.tags.size < 500) { conn.tags.set(p.tag, 1); tagsDirty = true; }
+        noteFsmLog(conn, entry);
+      }
     }
 
     function trimBuffer(conn) {
@@ -2968,7 +3042,6 @@ HTML_PAGE = """<!DOCTYPE html>
       const f = makeMatcher(document.getElementById('logSearchInput').value, regexMode.filter);
       const g = makeMatcher(document.getElementById('findInput').value, regexMode.find);
       filterFn = f.fn; findFn = g.fn;
-      tagNeedle = document.getElementById('tagFilterInput').value.trim().toLowerCase();
       const err = f.error ? 'Filter: ' + f.error : (g.error ? 'Find: ' + g.error : '');
       const box = document.getElementById('filterError');
       box.textContent = err; box.title = err;
@@ -2993,6 +3066,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const on = !enabledLevels.has(lvl);
       if (on) enabledLevels.add(lvl); else enabledLevels.delete(lvl);
       document.getElementById('lvl-' + lvl).setAttribute('aria-pressed', String(on));
+      saveLevels();
       applyLogFilter();
     }
 
@@ -3009,9 +3083,9 @@ HTML_PAGE = """<!DOCTYPE html>
       const lvlKey = lvl === 'error' ? 'E' : (lvl === 'warning' ? 'W' : (lvl === 'info' ? 'I' : (lvl === 'debug' ? 'D' : (lvl === 'verbose' ? 'V' : lvl))));
       if (!enabledLevels.has(lvlKey)) return false;
       if (filterFn && !filterFn(entry.text)) return false;
-      if (tagNeedle) {
+      if (selectedTags.size) {
         const p = parsedLine(entry);
-        if (!p || !p.tag.toLowerCase().includes(tagNeedle)) return false;
+        if (!p || !selectedTags.has(p.tag)) return false;
       }
       return true;
     }
@@ -3122,11 +3196,6 @@ HTML_PAGE = """<!DOCTYPE html>
       if (splitEnabled && splitConnId) renderLogsInto(splitConnId, 'logsPaneSplitContent');
       updateFindCount();
       renderStatusBar();
-    }
-
-    function refreshTagList() {
-      const list = document.getElementById('tagList');
-      list.replaceChildren(...Array.from(ensureConn(connId).tags).sort().map(t => new Option(t, t)));
     }
 
     // ---- Find: highlight inside the lines already shown, never hides any ----
@@ -3352,19 +3421,268 @@ HTML_PAGE = """<!DOCTYPE html>
       applyTxCollapsed();
     }
 
+    // ---- Tag filter: searchable multi-select over the tags actually seen ----
+    const selectedTags = new Set();
+
+    function tagSummaryText() {
+      if (!selectedTags.size) return 'All tags';
+      return selectedTags.size === 1 ? Array.from(selectedTags)[0] : selectedTags.size + ' tags';
+    }
+
+    function refreshTagList() {
+      const conn = ensureConn(connId);
+      const needle = document.getElementById('tagSearch').value.trim().toLowerCase();
+      const names = new Set(conn.tags.keys());
+      selectedTags.forEach(t => names.add(t));  // a selected tag stays listed even if this connection has not seen it
+      const list = document.getElementById('tagList');
+      const items = Array.from(names).filter(t => !needle || t.toLowerCase().includes(needle)).sort();
+      list.replaceChildren(...items.map(t => {
+        const on = selectedTags.has(t);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'option');
+        b.setAttribute('aria-selected', String(on));
+        b.className = 'tag-item' + (on ? ' on' : '');
+        const mark = document.createElement('i');
+        mark.className = 'fa-solid ' + (on ? 'fa-square-check' : 'fa-square');
+        mark.setAttribute('aria-hidden', 'true');
+        const name = document.createElement('span'); name.className = 'truncate'; name.textContent = t;
+        const n = document.createElement('span'); n.className = 'da-note'; n.textContent = conn.tags.get(t) || 0;
+        b.append(mark, name, n);
+        b.addEventListener('click', () => toggleTag(t));
+        return b;
+      }));
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'text-[11px] text-brand-muted px-1 py-2';
+        empty.textContent = names.size ? 'No tag matches.' : 'No ESP-IDF tags seen yet.';
+        list.appendChild(empty);
+      }
+      document.getElementById('tagSummary').textContent = tagSummaryText();
+    }
+
+    function toggleTag(t) {
+      if (selectedTags.has(t)) selectedTags.delete(t); else selectedTags.add(t);
+      refreshTagList();
+      applyLogFilter();
+    }
+
+    function clearTags() {
+      selectedTags.clear();
+      refreshTagList();
+      applyLogFilter();
+    }
+
+    // ---- Saved filter presets and persisted severity filters ----
+    const PRESET_KEY = 'serialdeck.filterPresets', LEVEL_KEY = 'serialdeck.levels';
+    function loadPresets() {
+      try { const v = JSON.parse(localStorage.getItem(PRESET_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (err) { return []; }
+    }
+    function storePresets(list) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(list)); } catch (err) {} }
+
+    function applyLevelsUi() {
+      ['E', 'W', 'I', 'D', 'V', 'elf', 'tx', 'plain'].forEach(l =>
+        document.getElementById('lvl-' + l).setAttribute('aria-pressed', String(enabledLevels.has(l))));
+    }
+
+    function restoreLevels() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(LEVEL_KEY) || 'null');
+        if (Array.isArray(saved)) enabledLevels = new Set(saved.filter(l => typeof l === 'string'));
+      } catch (err) {}
+      applyLevelsUi();
+    }
+
+    function saveLevels() { try { localStorage.setItem(LEVEL_KEY, JSON.stringify(Array.from(enabledLevels))); } catch (err) {} }
+
+    function currentPreset(name) {
+      return { name, filter: document.getElementById('logSearchInput').value, regex: regexMode.filter,
+               tags: Array.from(selectedTags), levels: Array.from(enabledLevels) };
+    }
+
+    function applyPreset(p) {
+      document.getElementById('logSearchInput').value = p.filter || '';
+      regexMode.filter = !!p.regex;
+      document.getElementById('filterRegexBtn').setAttribute('aria-pressed', String(regexMode.filter));
+      selectedTags.clear(); (p.tags || []).forEach(t => selectedTags.add(t));
+      enabledLevels = new Set(p.levels || []);
+      applyLevelsUi(); saveLevels(); refreshMatchers(); refreshTagList(); applyLogFilter();
+      document.getElementById('presetMenu').open = false;
+    }
+
+    function savePreset() {
+      const input = document.getElementById('presetName');
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      const list = loadPresets().filter(p => p.name !== name);
+      list.push(currentPreset(name));
+      storePresets(list.slice(-30));
+      input.value = '';
+      renderPresets();
+    }
+
+    function deletePreset(name) { storePresets(loadPresets().filter(p => p.name !== name)); renderPresets(); }
+
+    function renderPresets() {
+      const list = loadPresets();
+      const box = document.getElementById('presetList');
+      box.replaceChildren(...list.map(p => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-1';
+        const use = document.createElement('button');
+        use.type = 'button'; use.className = 'da-item'; use.textContent = p.name; use.title = 'Apply this filter';
+        use.addEventListener('click', () => applyPreset(p));
+        const del = document.createElement('button');
+        del.type = 'button'; del.className = 'tb-toggle'; del.setAttribute('aria-label', 'Delete preset ' + p.name);
+        del.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+        del.addEventListener('click', () => deletePreset(p.name));
+        row.append(use, del);
+        return row;
+      }));
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.className = 'text-[11px] text-brand-muted px-1 py-1';
+        empty.textContent = 'No saved filters yet.';
+        box.appendChild(empty);
+      }
+    }
+
+    // ---- FSM timeline: real transitions only ----
+    // Sources: a status event whose `fsm` changed, or a log line from a tag containing "fsm"
+    // that reads "STATE_A -> STATE_B". Anything else is simply not listed.
+    const FSM_ARROW_RE = /\\b([A-Z][A-Z0-9_]{1,})\\s*(?:->|→)\\s*([A-Z][A-Z0-9_]{1,})\\b/;
+    const FSM_MAX = 500;
+
+    function timeMs(t) {
+      const m = /^(\\d{2}):(\\d{2}):(\\d{2})(?:[.](\\d{1,3}))?/.exec(t || '');
+      return m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + (m[4] ? +m[4].padEnd(3, '0') : 0) : null;
+    }
+
+    function addTransition(conn, t) {
+      conn.fsmLog.push(t);
+      if (conn.fsmLog.length > FSM_MAX) conn.fsmLog.shift();
+      if (conn === ensureConn(connId) && activeTab === 'events') renderTimeline();
+    }
+
+    function noteFsmLog(conn, entry) {
+      const p = parsedLine(entry);
+      if (!p || !/fsm/i.test(p.tag)) return;
+      const m = FSM_ARROW_RE.exec(p.msg);
+      if (m) addTransition(conn, { from: m[1], to: m[2], time: entry.time, seq: entry._n, src: 'log' });
+    }
+
+    function noteFsmStatus(conn, event) {
+      if (typeof event.fsm !== 'string') return;
+      if (conn.lastFsm !== undefined && conn.lastFsm !== event.fsm) {
+        addTransition(conn, { from: conn.lastFsm, to: event.fsm, time: event.time, seq: conn.seq, src: 'status' });
+      }
+      conn.lastFsm = event.fsm;
+    }
+
+    function fmtDuration(ms) {
+      if (ms === null || ms < 0) return '';
+      return ms < 1000 ? ms + ' ms' : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + ' s';
+    }
+
+    function renderTimeline() {
+      const conn = ensureConn(connId);
+      const box = document.getElementById('fsmTimeline');
+      const rows = conn.fsmLog.map((t, i) => {
+        const prev = conn.fsmLog[i - 1];
+        // Time spent in `from`: only when the previous transition ended in that same state.
+        const a = prev && prev.to === t.from ? timeMs(prev.time) : null, b = timeMs(t.time);
+        const dur = a !== null && b !== null ? fmtDuration(b - a) : '';
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'tl-row';
+        row.title = 'Jump to the log line (' + t.src + ')';
+        const add = (cls, text) => { const s = document.createElement('span'); s.className = cls; s.textContent = text; row.appendChild(s); };
+        add('lr-time', t.time || '');
+        add('tl-state', t.from);
+        add('text-brand-muted', '→');
+        add('tl-state tl-to', t.to);
+        add('tl-dur', dur ? 'after ' + dur : '');
+        add('tl-src', t.src);
+        row.addEventListener('click', () => jumpToLine(t.seq));
+        return row;
+      });
+      document.getElementById('fsmTimelineEmpty').classList.toggle('hidden', rows.length > 0);
+      document.getElementById('fsmTimelineRows').replaceChildren(...rows);
+      document.getElementById('fsmTimelineCount').textContent = rows.length;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    // Select the line a transition belongs to, or the first drawn line after it.
+    function jumpToLine(seq) {
+      switchTab('logs');
+      const pane = document.getElementById('logsPanePrimary');
+      const row = Array.from(pane.querySelectorAll('.log-row')).find(r => +r.dataset.n >= seq);
+      const note = document.getElementById('fsmJumpNote');
+      if (!row) { note.textContent = 'That line is not drawn (filtered out or trimmed from the buffer).'; switchTab('events'); return; }
+      note.textContent = '';
+      setFollow(false);
+      selectRow(pane, row);
+      row.scrollIntoView({ block: 'center' });
+    }
+
+    // ---- Resizable split pane (width remembered) ----
+    let splitWidth = (() => { try { return +localStorage.getItem('serialdeck.splitWidth') || 0; } catch (err) { return 0; } })();
+    function applySplitWidth() {
+      const pane = document.getElementById('logsPaneSplit');
+      const total = document.getElementById('viewLogs').clientWidth;
+      if (!splitWidth || !total) { pane.style.flex = ''; return; }
+      pane.style.flex = '0 0 ' + Math.max(200, Math.min(splitWidth, total - 200)) + 'px';
+    }
+    (function setupSplitResize() {
+      const handle = document.getElementById('splitHandle');
+      const set = w => {
+        splitWidth = Math.round(w); applySplitWidth();
+        try { localStorage.setItem('serialdeck.splitWidth', String(splitWidth)); } catch (err) {}
+        requestAnimationFrame(termFit);
+      };
+      handle.addEventListener('pointerdown', e => {
+        handle.setPointerCapture(e.pointerId);
+        const move = ev => set(document.getElementById('viewLogs').getBoundingClientRect().right - ev.clientX);
+        const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); };
+        handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up);
+        e.preventDefault();
+      });
+      handle.addEventListener('keydown', e => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const cur = document.getElementById('logsPaneSplit').getBoundingClientRect().width;
+        set(cur + (e.key === 'ArrowLeft' ? 24 : -24));
+      });
+      window.addEventListener('resize', applySplitWidth);
+    })();
+
+    // ---- Pop-over menus (Device Actions, Presets, Tags, Shortcuts): one open at a time ----
+    document.addEventListener('click', e => {
+      const path = e.composedPath();
+      document.querySelectorAll('details.pop[open]').forEach(m => { if (!path.includes(m)) m.open = false; });
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        const m = document.querySelector('details.pop[open]');
+        if (m) { m.open = false; m.querySelector('summary').focus(); }
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f' &&
+                 activeTab === 'logs' && currentPage === 'deck') {
+        e.preventDefault();
+        const f = document.getElementById('findInput'); f.focus(); f.select();
+      }
+    });
+    document.querySelectorAll('details.pop').forEach(m => m.addEventListener('toggle', () => {
+      if (!m.open) return;
+      document.querySelectorAll('details.pop[open]').forEach(o => { if (o !== m) o.open = false; });
+      if (m.id === 'tagMenu') { refreshTagList(); document.getElementById('tagSearch').focus(); }
+      if (m.id === 'presetMenu') renderPresets();
+    }));
+
     // ---- Device Actions menu ----
     function deviceAction(action) {
       document.getElementById('deviceActions').open = false;
       return controlLine(action);
     }
-    document.addEventListener('click', e => {
-      const menu = document.getElementById('deviceActions');
-      if (menu.open && !menu.contains(e.target)) menu.open = false;
-    });
-    document.addEventListener('keydown', e => {
-      const menu = document.getElementById('deviceActions');
-      if (e.key === 'Escape' && menu.open) { menu.open = false; menu.querySelector('summary').focus(); }
-    });
 
     function renderEventEntry(entry) {
       const container = document.getElementById('viewEvents');
@@ -3967,7 +4285,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (event.type === 'init') {
         conn.status = event.status || {};
         if (event.logs) {
-          conn.logsBuffer = event.logs; conn.seq = 0; conn.pauseSeq = null; conn.tags.clear(); conn.trimmed = 0;
+          conn.logsBuffer = event.logs; conn.seq = 0; conn.pauseSeq = null; conn.tags.clear(); conn.trimmed = 0; conn.fsmLog = []; conn.lastFsm = undefined;
           conn.logsBuffer.forEach(e => adopt(conn, e));
           tagsDirty = true;
         }
@@ -3977,6 +4295,7 @@ HTML_PAGE = """<!DOCTYPE html>
         renderConnTabs();
         if (isActive) { updateStatus(conn.status); applyLogFilter(); }
       } else if (event.type === 'status') {
+        noteFsmStatus(conn, event);
         conn.status = Object.assign({}, conn.status, event);
         if (conn.status.connected) conn.error = false;
         if (!conn.status.connected) conn.termPending = [];
@@ -4065,7 +4384,7 @@ HTML_PAGE = """<!DOCTYPE html>
           splitConnId = candidate;
         } else {
           splitEnabled = false;
-          document.getElementById('logsPaneSplit').classList.add('hidden');
+          document.getElementById('logsPaneSplit').classList.add('hidden'); document.getElementById('splitHandle').classList.add('hidden');
           document.getElementById('splitViewBtn').classList.remove('text-brand-accent');
         }
       }
@@ -4123,7 +4442,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (splitConnId === id) {
         splitConnId = null;
         splitEnabled = false;
-        document.getElementById('logsPaneSplit').classList.add('hidden');
+        document.getElementById('logsPaneSplit').classList.add('hidden'); document.getElementById('splitHandle').classList.add('hidden');
         document.getElementById('splitViewBtn').classList.remove('text-brand-accent');
       }
       if (connId === id) {
@@ -4139,6 +4458,8 @@ HTML_PAGE = """<!DOCTYPE html>
     function toggleSplitView() {
       splitEnabled = !splitEnabled;
       document.getElementById('logsPaneSplit').classList.toggle('hidden', !splitEnabled);
+      document.getElementById('splitHandle').classList.toggle('hidden', !splitEnabled);
+      requestAnimationFrame(applySplitWidth);
       document.getElementById('splitViewBtn').classList.toggle('text-brand-accent', splitEnabled);
       if (!splitEnabled) return;
       populateSplitConnSelect();
@@ -4148,7 +4469,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!splitConnId) {
         alert('Open another connection first (the + button) to split against it.');
         splitEnabled = false;
-        document.getElementById('logsPaneSplit').classList.add('hidden');
+        document.getElementById('logsPaneSplit').classList.add('hidden'); document.getElementById('splitHandle').classList.add('hidden');
         document.getElementById('splitViewBtn').classList.remove('text-brand-accent');
         return;
       }
@@ -5257,6 +5578,8 @@ HTML_PAGE = """<!DOCTYPE html>
     setupLogPane('logsPanePrimary');
     setupLogPane('logsPaneSplitContent');
     applyTxCollapsed();
+    restoreLevels();
+    refreshTagList();
     refreshMatchers();
     setViewMode(viewMode);
     syncFollowUi();
