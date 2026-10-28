@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from . import mcp_status, runtime, ssh_socket
+    from . import mcp_status, metrics, runtime, ssh_socket
     from . import profiles
     from .autoconnect import RuleWatcher, Settings, SettingsError
     from .deckconfig import JsonFile
@@ -58,6 +58,7 @@ try:
     )
 except ImportError:
     import mcp_status
+    import metrics
     import runtime
     import ssh_socket
     import profiles
@@ -1306,6 +1307,9 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
     # Per-backend secret embedded only in the served page; SSH actions that
     # change a host or carry a secret require it in X-Deck-Action.
     action_token = ""
+    # Profile passed on the command line, "" when this entry point has none.
+    profile_name = ""
+    profile_supported = False
 
     def _conn_id(self, query: dict[str, list[str]]) -> str:
         return query.get("id", [ConnectionManager.DEFAULT_ID])[0] or ConnectionManager.DEFAULT_ID
@@ -1320,6 +1324,46 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             return True
         self._reject(HTTPStatus.FORBIDDEN, "request Host does not name this dashboard")
         return False
+
+    def _metrics_config(self) -> dict[str, Any]:
+        """Both rule layers merged, read from disk on every call; a bad layer is a problem, never an error."""
+        problems: list[str] = []
+        profile_rules: list[dict[str, Any]] = []
+        if self.profile_name:
+            found, broken = profiles.load_all()
+            if self.profile_name in found:
+                profile_rules = found[self.profile_name].get("metrics", [])
+            else:
+                reason = broken.get(f"{self.profile_name}.json", "no such profile")
+                problems.append(f"profile {self.profile_name}: {reason}")
+        user_rules, problem, rev = metrics.load_user_rules()
+        if problem:
+            problems.append(problem)
+        try:
+            merged = metrics.merge_rules(profile_rules, user_rules)
+        except metrics.MetricsError as exc:
+            problems.append(str(exc))
+            merged, user_rules = profile_rules, []
+        mine = {rule["id"] for rule in user_rules}
+        rules = [{**rule, "source": "user" if rule["id"] in mine else "profile"} for rule in merged]
+        return {"ok": True, "rules": rules, "problems": problems, "profile": self.profile_name,
+                "path": str(metrics.metrics_path()), "rev": rev, "profile_supported": self.profile_supported}
+
+    def _metrics_save(self, body: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
+        if not self._action_token_ok():
+            return {"ok": False, "error": "this action needs the dashboard page"}, HTTPStatus.FORBIDDEN
+        base_rev = body.get("base_rev")
+        if not isinstance(base_rev, str):
+            return {"ok": False, "error": "base_rev must be text"}, HTTPStatus.BAD_REQUEST
+        try:
+            rev = metrics.save_user_rules(body.get("rules"), base_rev)
+        except metrics.MetricsError as exc:
+            stale = str(exc) == "stale"
+            return {"ok": False, "error": str(exc)}, HTTPStatus.CONFLICT if stale else HTTPStatus.BAD_REQUEST
+        except OSError as exc:
+            return {"ok": False, "error": f"cannot write {metrics.metrics_path().name}: {exc}"}, \
+                HTTPStatus.INTERNAL_SERVER_ERROR
+        return {"ok": True, "rev": rev}, HTTPStatus.OK
 
     def _post_ok(self) -> bool:
         """Browsers send cross-site text/plain/form POSTs without preflight; a
@@ -1371,6 +1415,10 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
 
         if path == "/api/settings":
             self._send_json({"ok": True, "settings": self.connections.settings.get()})
+            return
+
+        if path == "/api/metrics_config":
+            self._send_json(self._metrics_config())
             return
 
         if path == "/api/ports":
@@ -1514,6 +1562,10 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
 
             if path.startswith("/api/ssh/"):
                 self._send_json(*self._ssh_request(path[len("/api/ssh/"):], body))
+                return
+
+            if path == "/api/metrics_rules":
+                self._send_json(*self._metrics_save(body))
                 return
 
             if path == "/api/settings":
@@ -5785,13 +5837,15 @@ class WebBackend:
                  socket_path: str = DEFAULT_SOCKET, attach_only: bool = False,
                  elf: str = "", mode: str = "linux",
                  hub_manager_factory: Callable[..., HubProcessManager] = HubProcessManager,
-                 hub_registry: HubRegistry | None = None) -> None:
+                 hub_registry: HubRegistry | None = None, profile_name: str | None = None) -> None:
         # Each backend gets its own handler class so two backends in one
         # process never serve each other's connections or instance token.
         self.handler = type("DeckBackendHttpHandler", (DeckHttpHandler,), {})
         self.instance_token = uuid.uuid4().hex
         self.handler.instance_token = self.instance_token
         self.handler.action_token = secrets.token_urlsafe(32)
+        self.handler.profile_name = profile_name or ""
+        self.handler.profile_supported = profile_name is not None
         # Bind the web port before spawning the hub so a busy port does not
         # leave an orphaned hub process behind.
         self.server = bind_web_server(host, port_web, handler=self.handler)
@@ -5921,7 +5975,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         backend = WebBackend(args.host, args.port_web, args.port, args.baud,
-                             args.socket, args.attach_only, args.elf, args.mode)
+                             args.socket, args.attach_only, args.elf, args.mode,
+                             profile_name=args.profile)
     except HubStartupError as exc:
         print(f"Hub startup failed: {exc}", file=sys.stderr)
         return 2

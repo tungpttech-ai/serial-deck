@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from serial_deck import app as app
+from serial_deck import metrics
 from serial_deck import web as web
 from serial_deck.hub_client import HubProcessManager, HubRegistry
 from serial_deck.web import (
@@ -398,6 +399,166 @@ class WebBackendTest(unittest.TestCase):
             backend.close()
         self.assertNotIn("window.open('/api/export_logs", HTML_PAGE)
         self.assertIn("link.download = 'serial_console.log'", HTML_PAGE)
+
+
+class MetricsApiTest(unittest.TestCase):
+    """GET /api/metrics_config and POST /api/metrics_rules: two layers, one writable."""
+
+    def setUp(self):
+        discovery = patch("serial_deck.hub_client.find_existing_hub", return_value=None)
+        discovery.start()
+        self.addCleanup(discovery.stop)
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.metrics_file = Path(self.dir.name) / "metrics.json"
+        self.profile_dir = Path(self.dir.name) / "profiles"
+        self.profile_dir.mkdir()
+        env = patch.dict(os.environ, {"SERIAL_DECK_METRICS_FILE": str(self.metrics_file),
+                                      "SERIAL_DECK_PROFILE_DIR": str(self.profile_dir)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def backend(self, profile_name=None):
+        backend = WebBackend("127.0.0.1", 0, "", 115200, "/tmp/fake.sock", profile_name=profile_name,
+                             hub_manager_factory=lambda uart_port, baud, socket_path:
+                             FakeHubManager(uart_port, baud, socket_path))
+        self.addCleanup(backend.close)
+        backend.start_in_thread()
+        return backend
+
+    def call(self, backend, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", backend.port, timeout=3)
+        try:
+            data = None if body is None else json.dumps(body).encode("utf-8")
+            conn.request(method, path, body=data, headers=headers or {})
+            response = conn.getresponse()
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else {}
+        finally:
+            conn.close()
+
+    def get_config(self, backend):
+        status, data = self.call(backend, "GET", "/api/metrics_config")
+        self.assertEqual(status, 200)
+        return data
+
+    def post_rules(self, backend, rules, base_rev, token=None, headers=None):
+        send = {"Content-Type": "application/json",
+                "X-Deck-Action": backend.handler.action_token if token is None else token}
+        send.update(headers or {})
+        return self.call(backend, "POST", "/api/metrics_rules", {"rules": rules, "base_rev": base_rev}, send)
+
+    @staticmethod
+    def rule(rule_id="a", **over):
+        return {"id": rule_id, "label": rule_id.upper(), "before": f"{rule_id}=", **over}
+
+    def write_profile(self, name, rules):
+        (self.profile_dir / f"{name}.json").write_text(json.dumps({"metrics": rules}), encoding="utf-8")
+
+    def test_config_merges_layers_with_source_path_and_rev(self):
+        self.write_profile("board", [self.rule("a", label="From profile"), self.rule("b")])
+        rev = metrics.save_user_rules([self.rule("a", label="Mine"), self.rule("c")], "", self.metrics_file)
+        data = self.get_config(self.backend("board"))
+        self.assertEqual([(r["id"], r["label"], r["source"]) for r in data["rules"]],
+                         [("a", "Mine", "user"), ("b", "B", "profile"), ("c", "C", "user")])
+        self.assertEqual((data["problems"], data["profile"], data["rev"], data["path"], data["profile_supported"]),
+                         ([], "board", rev, str(self.metrics_file), True))
+
+    def test_config_without_profile_argument_reports_unsupported(self):
+        data = self.get_config(self.backend())
+        self.assertEqual((data["rules"], data["profile"], data["profile_supported"], data["rev"]), ([], "", False, ""))
+
+    def test_config_bad_user_file_is_a_problem_profile_rules_kept(self):
+        self.write_profile("board", [self.rule("a")])
+        self.metrics_file.write_text("{broken", encoding="utf-8")
+        data = self.get_config(self.backend("board"))
+        self.assertEqual([r["id"] for r in data["rules"]], ["a"])
+        self.assertEqual(len(data["problems"]), 1)
+        self.assertIn("JSON", data["problems"][0])
+        self.assertEqual(len(data["rev"]), 40)  # the broken file can still be replaced from the UI
+
+    def test_config_unknown_or_broken_profile_is_a_problem(self):
+        data = self.get_config(self.backend("missing"))
+        self.assertIn("missing", data["problems"][0])
+        (self.profile_dir / "broken.json").write_text(json.dumps({"metrics": [{"id": "x"}]}), encoding="utf-8")
+        data = self.get_config(self.backend("broken"))
+        self.assertIn("broken", data["problems"][0])
+
+    def test_config_merge_over_32_is_a_problem(self):
+        self.write_profile("board", [self.rule(f"p{i}") for i in range(20)])
+        metrics.save_user_rules([self.rule(f"u{i}") for i in range(13)], "", self.metrics_file)
+        data = self.get_config(self.backend("board"))
+        self.assertEqual(len(data["rules"]), 20)
+        self.assertTrue(all(r["source"] == "profile" for r in data["rules"]))
+        self.assertIn("32", data["problems"][0])
+
+    def test_post_missing_token_refused(self):
+        backend = self.backend()
+        status, data = self.call(backend, "POST", "/api/metrics_rules", {"rules": [self.rule()], "base_rev": ""},
+                                 {"Content-Type": "application/json"})
+        self.assertEqual(status, 403)
+        self.assertFalse(self.metrics_file.exists())
+
+    def test_post_wrong_token_refused(self):
+        backend = self.backend()
+        status, _ = self.post_rules(backend, [self.rule()], "", token="not-the-token")
+        self.assertEqual(status, 403)
+        self.assertFalse(self.metrics_file.exists())
+
+    def test_post_cross_origin_refused(self):
+        backend = self.backend()
+        status, _ = self.post_rules(backend, [self.rule()], "", headers={"Origin": "http://evil.example"})
+        self.assertEqual(status, 403)
+        self.assertFalse(self.metrics_file.exists())
+
+    def test_post_without_json_content_type_refused(self):
+        backend = self.backend()
+        status, _ = self.post_rules(backend, [self.rule()], "", headers={"Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+        self.assertFalse(self.metrics_file.exists())
+
+    def test_post_invalid_rules_leaves_file_untouched(self):
+        backend = self.backend()
+        rev = metrics.save_user_rules([self.rule()], "", self.metrics_file)
+        before = self.metrics_file.read_bytes()
+        status, data = self.post_rules(backend, [self.rule(regex="(\\d+)")], rev)
+        self.assertEqual(status, 400)
+        self.assertFalse(data["ok"])
+        self.assertIn("regex", data["error"])
+        self.assertEqual(self.metrics_file.read_bytes(), before)
+
+    def test_post_malformed_body_is_400(self):
+        backend = self.backend()
+        headers = {"Content-Type": "application/json", "X-Deck-Action": backend.handler.action_token}
+        for body in ({"rules": "nope", "base_rev": ""}, {"rules": [], "base_rev": 5}, {"rules": []}):
+            status, data = self.call(backend, "POST", "/api/metrics_rules", body, headers)
+            self.assertEqual(status, 400, body)
+            self.assertFalse(data["ok"])
+
+    def test_post_stale_rev_is_409(self):
+        backend = self.backend()
+        rev = metrics.save_user_rules([self.rule()], "", self.metrics_file)
+        status, data = self.post_rules(backend, [self.rule("other")], "an-older-rev")
+        self.assertEqual((status, data["error"]), (409, "stale"))
+        self.assertEqual(metrics.load_user_rules(self.metrics_file)[2], rev)
+
+    def test_two_backends_do_not_share_tokens(self):
+        first, second = self.backend(), self.backend()
+        self.assertNotEqual(first.handler.action_token, second.handler.action_token)
+        status, _ = self.post_rules(second, [self.rule()], "", token=first.handler.action_token)
+        self.assertEqual(status, 403)
+
+    def test_post_then_get_roundtrip(self):
+        backend = self.backend()
+        status, data = self.post_rules(backend, [self.rule("a", unit="KB", pin=True)], "")
+        self.assertEqual((status, data["ok"]), (200, True))
+        config = self.get_config(backend)
+        self.assertEqual(config["rev"], data["rev"])
+        self.assertEqual([(r["id"], r["unit"], r["pin"], r["source"]) for r in config["rules"]],
+                         [("a", "KB", True, "user")])
+        status, data = self.post_rules(backend, [], config["rev"])  # deleting the last rule is a save too
+        self.assertEqual(status, 200)
+        self.assertEqual(self.get_config(backend)["rules"], [])
 
 
 class WebRequestGuardTest(unittest.TestCase):
