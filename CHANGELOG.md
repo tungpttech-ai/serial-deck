@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.1 (2026-10-28)
+
+- Console-first dashboard: one compact header row (port, baud, mode, connection tabs,
+  state), a slim FSM/target bar with a Device Actions menu, and a status bar with
+  measured values only. The console has separate Filter (hides) and Find (highlights),
+  a searchable multi-select tag filter with saved presets, regex toggles with inline
+  validation, labelled severity chips, Raw/Structured display, line details, keyboard
+  selection, distinct Pause and Follow, a collapsible TX composer that keeps its draft,
+  an FSM timeline of real transitions, a draggable/keyboard-resizable split pane,
+  per-tag colours, filter terms (`level:` `tag:` `text:`), an Export menu (shown lines,
+  window buffer, hub history), byte rate and totals, and sparklines for numeric
+  telemetry. No protocol or device-control change.
+- CI is green on Linux, macOS and Windows (both IPC backends): the tests that could only
+  pass on Linux are now skipped elsewhere, and `test_autorun_is_kept_while_a_real_client_uses_the_port`
+  no longer races (a dashboard attaching before the script runner was counted as the runner).
+- Stopping a script on Windows waits 1 s per stage instead of 3 s so both stages fit in the
+  3 s control-request timeout.
+- Known issue: the hub counts data clients and cannot tell a script runner from a
+  dashboard, so a dashboard that attaches before the runner of an autorun script can be
+  mistaken for it and the script is stopped while you watch. Marking runner connections is
+  planned.
+
 ## 0.3.0 (2026-10-28)
 
 - Console P2: per-tag colours (stable hue per tag name); filter query terms
