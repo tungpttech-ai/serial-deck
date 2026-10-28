@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Custom metrics: turn a number in the log into a live trend with warning limits.
+  Click **Track a number** in a line's details (or pick a field the log shows) on the
+  Telemetry tab, name it, optionally scale it and set `warn_below` / `warn_above`, and pin
+  it to the status bar. A rule is the exact text before the number (no user regex, so no
+  rule can stall the page). Rules live in `~/.config/serial-deck/metrics.json`
+  (`SERIAL_DECK_METRICS_FILE`), may also come from a device profile's `metrics` list
+  (read-only, a rule of yours with the same id wins), and saves are checked against the
+  file's revision so two windows cannot overwrite each other. New routes:
+  `GET /api/metrics_config`, `POST /api/metrics_rules` (page token required).
+  Trends are per connection, window-local, 600 samples per rule.
+
 ## 0.3.1 (2026-10-28)
 
 - Console-first dashboard: one compact header row (port, baud, mode, connection tabs,

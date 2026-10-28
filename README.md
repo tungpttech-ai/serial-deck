@@ -226,6 +226,57 @@ scripts, never create or change one.
 with no access to the dashboard or your files; they only send to the connected
 device and read what it sends, and stop when the window closes.
 
+## Custom metrics
+
+Turn any number in the log (free heap, CPU %, a temperature) into a live trend, with a
+warning limit, without writing code. On the **Telemetry** tab:
+
+1. Click a log line's time to open its details and press **Track a number** on the
+   value you want, or pick a field from *Fields seen in the log*.
+2. Give it a label and unit, optionally a multiplier (for example `0.0009765625` turns
+   bytes into KB), a warn-below or warn-above limit, and tick *Show in the status bar*
+   to pin it. The editor shows how many buffered lines match before you save.
+
+Each metric gets a card (latest value, trend, min/max, a `low`/`high` badge with icon
+and text) and, if pinned, a figure in the status bar.
+
+A rule is the exact text that comes right before the number, so `free=` reads the
+`190464` in `heap: free=190464 min=1`. They live in `~/.config/serial-deck/metrics.json`
+(`SERIAL_DECK_METRICS_FILE` overrides the path) and you can edit the file by hand:
+
+```json
+{"rules": [
+  {"id": "free_kb", "label": "Free heap", "unit": "KB", "before": "free=",
+   "scale": 0.0009765625, "warn_below": 64, "pin": true},
+  {"id": "temp", "label": "Temperature", "unit": "C", "before": "temp: ", "warn_above": 80}
+]}
+```
+
+| Field | Meaning |
+|---|---|
+| `id`, `label`, `before` | required; `id` is a lowercase letter then up to 31 lowercase letters, digits or `_` |
+| `tag` | only match lines from this exact ESP-IDF tag (omit to match any line) |
+| `unit`, `scale` | shown after the value; the number is multiplied by `scale` first (default 1) |
+| `warn_below`, `warn_above` | in scaled units; a value equal to the limit is not a warning |
+| `pin` | show in the status bar |
+
+The number must be written plainly: an optional `-`, digits, an optional `.digits`
+and an optional exponent (`-3`, `2.5`, `1e3`). The first occurrence of the text that is
+followed by a number is used. Echoed `TX>` lines and symbolized `[ELF]` lines are
+never measured. There is no regex on purpose, so no rule can slow the page down.
+
+A **device profile** can ship rules too: add a `metrics` list (same fields) to the
+profile JSON. Profile rules are read-only in the dashboard (use *Copy to mine* to
+change one); a rule of yours with the same `id` replaces it. Limits: 32 rules after
+merging, `before` up to 64 characters, `label` 40, `unit` 8, `metrics.json` 16 KiB.
+`serial-deck-web --profile NAME` selects the profile; the desktop app and other
+entry points read only `metrics.json`.
+
+Trends are kept per connection in the open window (600 samples per rule), are not
+saved, and are not visible to MCP or exports. Saving checks that the file did not
+change meanwhile: if another window saved first, the dashboard reloads instead of
+overwriting.
+
 ## Flashing ESP32 firmware
 
 Build with ESP-IDF, then pick the **absolute** build directory in the Flash
