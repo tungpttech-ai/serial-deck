@@ -2655,6 +2655,19 @@ HTML_PAGE = """<!DOCTYPE html>
           <i class="fa-solid fa-database"></i>
           <span>Parsed Telemetry & JSON Snapshot</span>
         </h3>
+        <section class="mb-4 text-xs" aria-label="Custom metrics">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-bold uppercase tracking-wider">Your metrics</span>
+            <button id="metricReloadBtn" type="button" onclick="loadMetricRules()" class="tb-btn" title="Reload the rule files"><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>Reload</span></button>
+            <span id="metricSource" class="mono text-[10px] text-brand-muted truncate"></span>
+          </div>
+          <div id="metricProblems" role="status" class="mono text-[11px] mb-1"></div>
+          <div id="metricRulesList" class="mb-2"></div>
+          <div id="metricCards" class="grid gap-3 mb-3" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))"></div>
+          <div id="metricEditor" class="hidden mb-3 p-2 border border-brand-border rounded bg-brand-surface"></div>
+          <details class="mb-2"><summary class="cursor-pointer text-brand-muted">Fields seen in the log (click one to track it)</summary>
+            <div id="metricDiscovery" class="max-h-48 overflow-y-auto mt-1"></div></details>
+        </section>
         <div id="telSparkEmpty" class="text-xs text-brand-muted mb-3">No numeric telemetry fields received yet. Numeric values the device reports appear here as trends (this window only).</div>
         <div id="telSpark" class="grid gap-3 mb-4" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))"></div>
         <pre id="inspectorContent" class="mono text-xs bg-brand-surface border border-brand-border p-4 rounded-xl text-brand-cyan overflow-x-auto">{}</pre>
@@ -3035,7 +3048,7 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('viewLogs').classList.toggle('hidden', tab !== 'logs');
       document.getElementById('viewEvents').classList.toggle('hidden', tab !== 'events');
       document.getElementById('viewTimeline').classList.toggle('hidden', tab !== 'events');
-      if (tab === 'inspector') renderSparks();
+      if (tab === 'inspector') { renderSparks(); renderMetricsUi(); }
       if (tab === 'events') renderTimeline();
       document.getElementById('viewInspector').classList.toggle('hidden', tab !== 'inspector');
       document.getElementById('viewTerminal').classList.toggle('hidden', tab !== 'terminal');
@@ -3072,6 +3085,111 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       return entry._p;
     }
+
+    // METRICS-DRAFT-BEGIN
+    // ---- Turning a number in a line into a draft rule, and finding such numbers in the buffer ----
+    const SPAN_LINE_MAX = 4096;      // characters of one line scanned for numbers
+    const SPANS_PER_LINE = 40;
+    const DISCOVER_MAX = 200;
+    const KEY_START = /[A-Za-z_]/;
+    const KEY_CHAR = /[A-Za-z0-9_.]/;
+
+    // Numbers in `text`: [{start, end}]. Linear: one pass, each position visited once.
+    function numberSpans(text) {
+      const spans = [];
+      const n = Math.min(text.length, SPAN_LINE_MAX);
+      let i = 0;
+      while (i < n && spans.length < SPANS_PER_LINE) {
+        const c = text.charCodeAt(i);
+        const prev = i > 0 ? text.charCodeAt(i - 1) : 0;
+        const startsNumber = isDigit(c) || (c === 45 && isDigit(text.charCodeAt(i + 1)));
+        const joinsWord = isDigit(c) && ((prev >= 65 && prev <= 90) || (prev >= 97 && prev <= 122) || isDigit(prev) || prev === 46);
+        if (startsNumber && !joinsWord) {
+          const end = numberEnd(text, i);
+          if (end > i) { spans.push({ start: i, end }); i = end; continue; }
+        }
+        i++;
+      }
+      return spans;
+    }
+
+    // The `key=` / `key: ` text directly before the number at `start`, or null. Never reaches back past the key,
+    // nor below `floor` (the start of the message, so an ESP-IDF "tag:" can never be taken for a key).
+    function keyBefore(text, start, floor) {
+      const low = floor || 0;
+      let i = start;
+      while (i > low && text[i - 1] === ' ') i--;
+      if (i <= low || (text[i - 1] !== '=' && text[i - 1] !== ':')) return null;
+      const sepEnd = i;
+      i--;
+      while (i > low && text[i - 1] === ' ') i--;
+      const keyEnd = i;
+      while (i > low && KEY_CHAR.test(text[i - 1])) i--;
+      if (i === keyEnd || !KEY_START.test(text[i])) return null;
+      return { before: text.slice(i, start), key: text.slice(i, keyEnd), sepEnd };
+    }
+
+    function ruleIdFromKey(key, taken) {
+      let id = key.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+/, '');
+      if (!/^[a-z]/.test(id)) id = 'm_' + id;
+      id = id.slice(0, 32) || 'metric';
+      if (!taken) return id;
+      let n = 2, candidate = id;
+      while (taken.has(candidate)) { const tail = '_' + n++; candidate = id.slice(0, 32 - tail.length) + tail; }
+      return candidate;
+    }
+
+    // A rule draft for the number at `offset` in `entry`, or null when it is not a key=value / key: value number.
+    function draftFromNumber(entry, offset, takenIds) {
+      const text = entry.text;
+      if (typeof text !== 'string' || entry.level === 'tx' || entry.level === 'elf') return null;
+      const span = numberSpans(text).find(s => s.start === offset);
+      if (!span) return null;
+      const p = parsedLine(entry);
+      const floor = p ? text.length - p.msg.length : 0;
+      if (span.start < floor) return null;  // inside "I (tick) tag:" — never a metric
+      const found = keyBefore(text, span.start, floor);
+      if (!found || found.before.length > 64) return null;
+      return { id: ruleIdFromKey(found.key, takenIds), label: found.key, before: found.before, tag: p ? p.tag : '',
+               unit: '', scale: 1, warn_below: null, warn_above: null, pin: false };
+    }
+
+    // Distinct key=value fields in the buffer: [{before, tag, count, last}], capped at DISCOVER_MAX.
+    function discoverFields(conn) {
+      const found = new Map();
+      for (let i = 0; i < conn.logsBuffer.length; i++) {
+        const entry = conn.logsBuffer[i];
+        if (entry.level === 'tx' || entry.level === 'elf' || typeof entry.text !== 'string') continue;
+        const spans = numberSpans(entry.text);
+        if (!spans.length) continue;
+        const p = parsedLine(entry);
+        const tag = p ? p.tag : '';
+        const limit = p ? entry.text.length - p.msg.length : 0;
+        for (const span of spans) {
+          if (span.start < limit) continue;
+          const key = keyBefore(entry.text, span.start, limit);
+          if (!key || key.before.length > 64) continue;
+          const id = tag.length + ':' + tag + key.before;  // length-prefixed: no tag/before pair can collide
+          let f = found.get(id);
+          if (!f) {
+            if (found.size >= DISCOVER_MAX) continue;
+            f = { before: key.before, tag, count: 0, last: null };
+            found.set(id, f);
+          }
+          f.count++;
+          f.last = Number(entry.text.slice(span.start, span.end));
+        }
+      }
+      return Array.from(found.values());
+    }
+
+    // A rule draft for a field found by discoverFields (the `before` text is kept exactly as seen).
+    function draftFromField(field, takenIds) {
+      const key = field.before.replace(/[\s=:]+$/, '');
+      return { id: ruleIdFromKey(key, takenIds), label: key.slice(0, 40), before: field.before, tag: field.tag,
+               unit: '', scale: 1, warn_below: null, warn_above: null, pin: false };
+    }
+    // METRICS-DRAFT-END
 
     // METRICS-ENGINE-BEGIN
     // ---- Custom metrics: a rule is the literal text before a number (see serial_deck/metrics.py) ----
@@ -3168,6 +3286,197 @@ HTML_PAGE = """<!DOCTYPE html>
       });
     }
     // METRICS-ENGINE-END
+
+    // METRICS-UI-BEGIN
+    // ---- Metrics editor on the Telemetry tab. All user-controlled text goes through textContent. ----
+    let metricConfig = { rules: [], problems: [], profile: '', path: '', rev: '', profile_supported: false };
+    let metricDraft = null;      // the rule being edited, or null
+    let metricDraftIsNew = true;
+    let metricNote = '';
+    const metricEl = id => document.getElementById(id);
+
+    function mkEl(tag, cls, text) {
+      const el = document.createElement(tag);
+      if (cls) el.className = cls;
+      if (text !== undefined) el.textContent = text;
+      return el;
+    }
+
+    function mkBtn(label, onclick, cls) {
+      const b = mkEl('button', cls || 'tb-btn', label);
+      b.type = 'button';
+      b.addEventListener('click', onclick);
+      return b;
+    }
+
+    async function loadMetricRules() {
+      try {
+        const res = await fetch('/api/metrics_config');
+        const data = await res.json();
+        if (data.ok) {
+          metricConfig = data;
+          setMetricRules(data.rules.map(({ source, ...rule }) => rule));
+        }
+      } catch (err) {
+        metricConfig = Object.assign({}, metricConfig, { problems: ['Could not load the metric rules: ' + err.message] });
+      }
+      renderMetricsUi();
+    }
+
+    function userRules() { return metricConfig.rules.filter(r => r.source === 'user').map(({ source, ...rule }) => rule); }
+
+    // Save the whole user layer; `stale` means another window saved first: reload instead of overwriting.
+    async function saveUserRules(rules) {
+      try {
+        const res = await fetch('/api/metrics_rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
+          body: JSON.stringify({ rules, base_rev: metricConfig.rev })
+        });
+        const out = await res.json();
+        if (res.status === 409) { metricNote = 'The rules changed elsewhere; reloaded. Review and save again.'; await loadMetricRules(); return false; }
+        if (!out.ok) { metricNote = out.error || 'Saving failed'; renderMetricsUi(); return false; }
+        metricNote = 'Saved.';
+        await loadMetricRules();
+        return true;
+      } catch (err) {
+        metricNote = 'Saving failed: ' + err.message;
+        renderMetricsUi();
+        return false;
+      }
+    }
+
+    function startMetricDraft(rule, isNew) {
+      metricDraft = Object.assign({}, rule);
+      metricDraftIsNew = isNew;
+      metricNote = '';
+      switchTab('inspector');
+      renderMetricsUi();
+      const form = metricEl('metricEditor');
+      if (form.scrollIntoView) form.scrollIntoView({ block: 'nearest' });
+    }
+
+    function trackNumber(entry, offset) {
+      const taken = new Set(metricConfig.rules.map(r => r.id));
+      const draft = draftFromNumber(entry, offset, taken);
+      if (draft) startMetricDraft(draft, true);
+    }
+
+    function readDraftForm() {
+      const num = id => { const v = metricEl(id).value.trim(); return v === '' ? null : Number(v); };
+      return { id: metricDraft.id, label: metricEl('mdLabel').value.trim(), before: metricEl('mdBefore').value,
+               tag: metricEl('mdTag').value.trim(), unit: metricEl('mdUnit').value.trim(),
+               scale: num('mdScale') === null ? 1 : num('mdScale'), warn_below: num('mdWarnBelow'),
+               warn_above: num('mdWarnAbove'), pin: metricEl('mdPin').checked };
+    }
+
+    function draftMatches(rule) {
+      const conn = ensureConn(connId);
+      let hits = 0;
+      for (let i = 0; i < conn.logsBuffer.length; i++) if (extractMetric(rule, conn.logsBuffer[i]) !== null) hits++;
+      return hits;
+    }
+
+    function refreshDraftMatches() {
+      if (!metricDraft) return;
+      const rule = readDraftForm();
+      const out = metricEl('mdMatches');
+      if (!rule.before) { out.textContent = 'Type the text that comes right before the number.'; return; }
+      const hits = draftMatches(rule);
+      out.textContent = hits ? 'Matches ' + hits.toLocaleString() + ' line(s) in this window.'
+        : 'No match: the text before the number must appear exactly, and a number must follow it.';
+    }
+
+    async function saveDraft() {
+      const rule = readDraftForm();
+      const mine = userRules().filter(r => r.id !== rule.id);
+      const overrides = metricConfig.rules.find(r => r.id === rule.id && r.source === 'profile');
+      if (await saveUserRules(mine.concat([rule]))) {
+        metricDraft = null;
+        metricNote = overrides ? 'Saved. This replaces the profile rule with the same id.' : 'Saved.';
+        renderMetricsUi();
+      }
+    }
+
+    async function deleteUserRule(id) {
+      if (await saveUserRules(userRules().filter(r => r.id !== id))) renderMetricsUi();
+    }
+
+    function fieldRow(f) {
+      const row = mkEl('button', 'tl-row');
+      row.type = 'button';
+      row.title = 'Draft a rule for this field';
+      const tracked = metricRules.some(r => r.before === f.before && (r.tag === '' || r.tag === f.tag));
+      row.append(mkEl('span', 'tl-state', f.before.trim()), mkEl('span', 'text-brand-muted', f.tag || 'any line'),
+                 mkEl('span', 'tl-dur', 'last ' + f.last + ' · ' + f.count + ' line(s)'),
+                 mkEl('span', 'tl-src', tracked ? 'tracked' : 'track'));
+      row.addEventListener('click', () => startMetricDraft(draftFromField(f, new Set(metricConfig.rules.map(r => r.id))), true));
+      return row;
+    }
+
+    function ruleRow(rule) {
+      const row = mkEl('div', 'flex items-center gap-2 py-0.5');
+      const source = rule.source === 'user' ? 'yours' : 'profile';
+      row.append(mkEl('span', 'tl-state', rule.label), mkEl('span', 'text-brand-muted mono', rule.before),
+                 mkEl('span', 'tl-src', source + (rule.unit ? ' · ' + rule.unit : '')));
+      const plain = ({ source: _s, ...r }) => r;
+      if (rule.source === 'user') {
+        row.append(mkBtn('Edit', () => startMetricDraft(plain(rule), false)), mkBtn('Delete', () => deleteUserRule(rule.id), 'tb-btn tb-danger'));
+      } else {
+        row.append(mkBtn('Copy to mine', () => startMetricDraft(plain(rule), true)));
+      }
+      return row;
+    }
+
+    function renderDraftForm() {
+      const box = metricEl('metricEditor');
+      box.replaceChildren();
+      box.classList.toggle('hidden', !metricDraft);
+      if (!metricDraft) return;
+      const d = metricDraft;
+      const field = (id, label, value, type, hint) => {
+        const wrap = mkEl('label', 'block text-[11px] text-brand-muted');
+        const input = mkEl('input', 'mt-1 w-full px-2 py-1 bg-brand-surfaceAlt border border-brand-border rounded mono text-xs text-brand-text focus:outline-none focus:border-brand-accent');
+        input.id = id; input.type = type || 'text'; input.value = value === null || value === undefined ? '' : value;
+        if (type === 'number') input.step = 'any';
+        input.addEventListener('input', refreshDraftMatches);
+        wrap.append(label, input);
+        if (hint) wrap.appendChild(mkEl('span', 'block text-[10px]', hint));
+        return wrap;
+      };
+      const grid = mkEl('div', 'grid gap-2');
+      grid.style.gridTemplateColumns = 'repeat(auto-fill,minmax(150px,1fr))';
+      grid.append(field('mdLabel', 'Label', d.label), field('mdUnit', 'Unit', d.unit),
+                  field('mdBefore', 'Text before the number', d.before, 'text', 'Exactly as in the log, e.g. free='),
+                  field('mdTag', 'Only lines with tag (optional)', d.tag),
+                  field('mdScale', 'Multiply by', d.scale, 'number', 'e.g. 0.0009765625 for bytes to KB'),
+                  field('mdWarnBelow', 'Warn below', d.warn_below, 'number'), field('mdWarnAbove', 'Warn above', d.warn_above, 'number'));
+      const pin = mkEl('label', 'flex items-center gap-2 text-xs mt-2');
+      const check = mkEl('input'); check.type = 'checkbox'; check.id = 'mdPin'; check.checked = !!d.pin;
+      pin.append(check, mkEl('span', '', 'Show in the status bar'));
+      const actions = mkEl('div', 'flex items-center gap-2 mt-2');
+      actions.append(mkBtn('Save', saveDraft, 'tb-btn font-bold'), mkBtn('Cancel', () => { metricDraft = null; renderMetricsUi(); }),
+                     mkEl('span', 'mono text-[11px] text-brand-muted'));
+      actions.lastChild.id = 'mdMatches';
+      box.append(mkEl('div', 'font-bold text-xs mb-1', metricDraftIsNew ? 'New metric' : 'Edit metric'), grid, pin, actions);
+      refreshDraftMatches();
+    }
+
+    function renderMetricsUi() {
+      const problems = metricEl('metricProblems');
+      problems.replaceChildren(...metricConfig.problems.map(p => mkEl('div', 'text-brand-danger', p)));
+      if (metricNote) problems.appendChild(mkEl('div', 'text-brand-muted', metricNote));
+      metricEl('metricRulesList').replaceChildren(...(metricConfig.rules.length ? metricConfig.rules.map(ruleRow)
+        : [mkEl('div', 'text-brand-muted', 'No metrics yet. Pick a field below, or open a log line and use "Track a number".')]));
+      metricEl('metricSource').textContent = 'Your rules: ' + (metricConfig.path || 'metrics.json') +
+        (metricConfig.profile_supported ? (metricConfig.profile ? ' · profile: ' + metricConfig.profile : ' · no profile selected')
+          : ' · this window has no profile option, only your rules apply');
+      const fields = discoverFields(ensureConn(connId));
+      metricEl('metricDiscovery').replaceChildren(...(fields.length ? fields.map(fieldRow)
+        : [mkEl('div', 'text-brand-muted', 'No key=value numbers seen in the log yet.')]));
+      renderDraftForm();
+    }
+    // METRICS-UI-END
 
     function adopt(conn, entry) {
       entry._n = ++conn.seq;
@@ -3491,6 +3800,20 @@ HTML_PAGE = """<!DOCTYPE html>
         b.addEventListener('click', () => copyText(text, null));
         box.appendChild(b);
       });
+      const trackable = numberSpans(entry.text).filter(span => draftFromNumber(entry, span.start, null));
+      if (trackable.length) {
+        const track = document.createElement('div');
+        track.className = 'lr-meta';
+        track.textContent = 'Track a number: ';
+        trackable.forEach(span => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.textContent = entry.text.slice(span.start, span.end);
+          b.title = 'Make a metric from ' + draftFromNumber(entry, span.start, null).label;
+          b.addEventListener('click', () => trackNumber(entry, span.start));
+          track.appendChild(b);
+        });
+        box.appendChild(track);
+      }
       row.after(box);
     }
 
@@ -5874,6 +6197,7 @@ HTML_PAGE = """<!DOCTYPE html>
     refreshMatchers();
     setViewMode(viewMode);
     syncFollowUi();
+    loadMetricRules();
     bootstrapConnections();
   </script>
 </body>

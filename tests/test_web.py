@@ -474,6 +474,137 @@ class MetricsEngineTest(unittest.TestCase):
             self.assertNotIn("metrics", body, name)  # samples are trends, not log lines
 
 
+JS_EDITOR_CASES = r"""
+const E = (text, level = 'info') => ({text, level, time: 't'});
+const R = o => Object.assign({id: 'r', label: 'R', before: '', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false}, o);
+const at = (e, needle) => e.text.indexOf(needle);
+const drafts = e => numberSpans(e.text).map(s => draftFromNumber(e, s.start, null)).filter(Boolean);
+const results = {};
+const heap = E('I (30000) sys_monitor: heap: internal_free=190464 internal_min=1');
+results.heap = draftFromNumber(heap, at(heap, '190464'), null);
+results.tickNotOffered = draftFromNumber(heap, at(heap, '30000'), null);
+results.tsDrafts = drafts(E('12:00:01.123 uptime=1234')).map(d => d.before);
+results.colon = (() => { const e = E('temp: 25', 'plain'); const d = draftFromNumber(e, 6, null); return [d.before, extractMetric(R({before: d.before}), e)]; })();
+results.spaced = (() => { const e = E('temp = 25', 'plain'); const d = draftFromNumber(e, 7, null); return [d.before, extractMetric(R({before: d.before}), e)]; })();
+results.roundTrip = [['x=-3', -3], ['x=2.5', 2.5], ['pressure=1013', 1013]].map(([t, v]) => {
+  const e = E(t, 'plain'); const d = draftFromNumber(e, t.indexOf('=') + 1, null); return extractMetric(d, e) === v; });
+results.noKey = ['task 5', 'temp25', '5', 'a-5', '(7)'].map(t => drafts(E(t, 'plain')).length);
+results.idLabel = [results.heap.id, results.heap.label, results.heap.tag];
+results.idUnique = draftFromNumber(heap, at(heap, '190464'), new Set(['internal_free'])).id;
+results.idUnderscoreStart = [draftFromNumber(E('_x=1', 'plain'), 3, null).id, draftFromNumber(E('_9=1', 'plain'), 3, null).id];
+results.tagSepNotAKey = drafts(E('I (1) sys_monitor: 5 tasks')).length;
+results.longKeyRefused = draftFromNumber(E('k'.repeat(70) + '=5', 'plain'), 71, null);
+const conn = {logsBuffer: [E('I (1) sys_monitor: internal_free=10 internal_min=5'), E('I (2) sys_monitor: internal_free=20'),
+  E('I (3) sys_monitor: internal_free=30'), E('I (4) other: internal_free=7')], metrics: {}};
+results.found = discoverFields(conn).map(f => [f.tag, f.before, f.count, f.last]).sort();
+results.cap = discoverFields({logsBuffer: Array.from({length: 300}, (_, i) => E('I (' + i + ') t: key' + i + '=' + i)), metrics: {}}).length;
+results.skipsTxElf = discoverFields({logsBuffer: [E('a=1', 'tx'), E('a=2', 'elf')], metrics: {}}).length;
+const t0 = Date.now();
+results.hugeFields = discoverFields({logsBuffer: [E('a'.repeat(100000), 'plain')], metrics: {}}).length;
+results.hugeMs = Date.now() - t0;
+results.spanCap = numberSpans(Array.from({length: 100}, (_, i) => 'a' + i + '=' + i).join(' ')).length;
+results.fieldDraft = [draftFromField({before: 'internal_free=', tag: 'sys_monitor', count: 3, last: 30}, null),
+  draftFromField({before: 'temp: ', tag: '', count: 1, last: 1}, null),
+  draftFromField({before: 'temp: ', tag: '', count: 1, last: 1}, new Set(['temp', 'temp_2'])),
+  draftFromField({before: 'a = ', tag: '', count: 1, last: 1}, null)].map(d => [d.id, d.label, d.before, d.tag]);
+console.log(JSON.stringify(results));
+"""
+
+def page_script():
+    return re.findall(r"<script>(.*?)</script>", served_page(), re.S)[-1]
+
+def page_block(script, name):
+    return script.split(f"// {name}-BEGIN", 1)[1].split(f"// {name}-END", 1)[0]
+
+def run_page_js(script, blocks, cases):
+    """Run page blocks plus `cases` in node; returns the JSON the cases print last."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        raise unittest.SkipTest("node is not installed")
+    idf = re.search(r"    const IDF_RE = .*?;\n", script).group(0)
+    parsed = script[script.index("    function parsedLine(entry) {"):]
+    parsed = parsed[:parsed.index("\n    }\n") + 7]
+    program = "const conns = {};\n" + idf + parsed + "".join(page_block(script, b) for b in blocks) + cases
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "page_cases.js"
+        path.write_text(program, encoding="utf-8")
+        done = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=120)
+    if done.returncode != 0:
+        raise AssertionError(done.stderr[-800:])
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+class MetricsEditorTest(unittest.TestCase):
+    """Track-a-number: drafts and field discovery run in node; the form is checked by markup."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.script = page_script()
+        if "METRICS-DRAFT-BEGIN" not in cls.script:
+            raise AssertionError("the page has no draft/discovery block yet")
+        cls.r = run_page_js(cls.script, ("METRICS-ENGINE", "METRICS-DRAFT"), JS_EDITOR_CASES)
+
+    def test_draft_takes_the_key_text_tag_and_names_from_the_line(self):
+        d = self.r["heap"]
+        self.assertEqual((d["before"], d["tag"], d["id"], d["label"]), ("internal_free=", "sys_monitor", "internal_free", "internal_free"))
+        self.assertEqual((d["unit"], d["scale"], d["warn_below"], d["warn_above"], d["pin"]), ("", 1, None, None, False))
+
+    def test_draft_never_includes_timestamps_or_the_tick(self):
+        self.assertIsNone(self.r["tickNotOffered"])
+        self.assertEqual(self.r["tsDrafts"], ["uptime="])
+
+    def test_colon_and_spaced_separators_keep_their_spaces_and_round_trip(self):
+        self.assertEqual(self.r["colon"], ["temp: ", 25])
+        self.assertEqual(self.r["spaced"], ["temp = ", 25])
+        self.assertEqual(self.r["roundTrip"], [True, True, True])
+
+    def test_numbers_without_a_key_separator_are_not_offered(self):
+        self.assertEqual(self.r["noKey"], [0, 0, 0, 0, 0])
+        self.assertEqual(self.r["tagSepNotAKey"], 0)  # "sys_monitor: 5 tasks": the colon belongs to the tag
+        self.assertIsNone(self.r["longKeyRefused"])
+
+    def test_ids_are_valid_and_unique(self):
+        self.assertEqual(self.r["idUnique"], "internal_free_2")
+        self.assertEqual(self.r["idUnderscoreStart"], ["x", "m_9"])  # leading "_" is dropped; an id must start with a letter
+
+    def test_field_draft_names_the_rule_from_the_key_and_keeps_the_exact_before_text(self):
+        self.assertEqual(self.r["fieldDraft"], [["internal_free", "internal_free", "internal_free=", "sys_monitor"],
+                                                ["temp", "temp", "temp: ", ""], ["temp_3", "temp", "temp: ", ""],
+                                                ["a", "a", "a = ", ""]])
+
+    def test_discovery_groups_by_tag_and_key_and_counts(self):
+        self.assertEqual(self.r["found"], [["other", "internal_free=", 1, 7], ["sys_monitor", "internal_free=", 3, 30],
+                                           ["sys_monitor", "internal_min=", 1, 5]])
+
+    def test_discovery_is_capped_skips_tx_and_elf_and_stays_linear(self):
+        self.assertEqual(self.r["cap"], 200)
+        self.assertEqual(self.r["skipsTxElf"], 0)
+        self.assertEqual(self.r["hugeFields"], 0)
+        self.assertLess(self.r["hugeMs"], 500)
+        self.assertEqual(self.r["spanCap"], 40)
+
+    def test_page_has_the_editor_elements_and_line_detail_track_buttons(self):
+        page = served_page()
+        for element in ("metricEditor", "metricDiscovery", "metricProblems", "metricReloadBtn", "metricCards",
+                        "metricRulesList"):
+            self.assertIn(f'id="{element}"', page)
+        detail = self.script.split("function toggleDetail(row) {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("Track a number", detail)
+        self.assertIn("numberSpans(entry.text)", detail)
+
+    def test_save_posts_json_with_the_page_token_and_base_rev_and_handles_stale(self):
+        save = self.script.split("async function saveUserRules(", 1)[1].split("\n    }\n", 1)[0]
+        for needle in ("'/api/metrics_rules'", "'X-Deck-Action': DECK_ACTION_TOKEN", "'Content-Type': 'application/json'",
+                       "base_rev: metricConfig.rev", "res.status === 409"):
+            self.assertIn(needle, save)
+
+    def test_user_controlled_text_never_reaches_innerhtml(self):
+        ui = page_block(self.script, "METRICS-UI")
+        self.assertNotIn("innerHTML", ui)
+        self.assertIn("textContent", ui)
+
+
 class SmallWindowLogLayoutTest(unittest.TestCase):
     """Shrinking the window made the log grow to every line instead of scrolling."""
 
