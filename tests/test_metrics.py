@@ -3,8 +3,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from serial_deck import metrics
+from serial_deck import metrics, profiles
 from serial_deck.metrics import MetricsError, clean_rule, clean_rules, merge_rules
 
 
@@ -188,6 +189,42 @@ class FileLayerTest(unittest.TestCase):
     def test_saved_file_is_owner_only(self):
         metrics.save_user_rules([rule()], "", self.path)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+
+class ProfileMetricsTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        env = patch.dict(os.environ, {"SERIAL_DECK_PROFILE_DIR": self.dir.name})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def write(self, name, data):
+        (Path(self.dir.name) / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def test_profile_accepts_metrics_list(self):
+        self.write("board", {"label": "Board", "metrics": [rule(unit="KB", scale=0.5)]})
+        found, problems = profiles.load_all()
+        self.assertEqual(problems, {})
+        self.assertEqual(found["board"]["metrics"], [clean_rule(rule(unit="KB", scale=0.5))])
+
+    def test_bad_metric_is_a_profile_problem_other_profiles_still_load(self):
+        self.write("bad", {"metrics": [rule(regex="(\\d+)")]})
+        self.write("good", {"metrics": [rule()]})
+        found, problems = profiles.load_all()
+        self.assertIn("good", found)
+        self.assertNotIn("bad", found)
+        self.assertIn("regex", problems["bad.json"])
+
+    def test_profile_without_metrics_unchanged(self):
+        self.write("plain", {"label": "Plain", "default_baud": 115200})
+        found, problems = profiles.load_all()
+        self.assertEqual(problems, {})
+        self.assertNotIn("metrics", found["plain"])
+
+    def test_metrics_must_be_a_list_of_valid_rules(self):
+        self.write("odd", {"metrics": {"id": "x"}})
+        self.assertIn("rules must be a list", profiles.load_all()[1]["odd.json"])
 
 
 if __name__ == "__main__":

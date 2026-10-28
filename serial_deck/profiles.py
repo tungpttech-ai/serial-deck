@@ -11,7 +11,10 @@ Directory: `SERIAL_DECK_PROFILE_DIR`, else `<config dir>/profiles`. One
     {"label": "My board", "remote_socket": "/run/svc.sock.stream", "control_socket": "/run/svc.sock",
      "screen_path": "/api/screen?format=jpeg", "restart_args": ["a", "b"],
      "follow_socket_suffix": ".stream", "mcp_tool_prefix": "board",
-     "default_baud": 2000000, "default_mode": "control"}
+     "default_baud": 2000000, "default_mode": "control",
+     "metrics": [{"id": "heap_free", "label": "Free heap", "before": "free=", "unit": "KB"}]}
+
+`metrics` is a list of custom-metric rules (see metrics.py), read-only in the UI.
 """
 
 from __future__ import annotations
@@ -23,16 +26,17 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import ssh_socket
+    from . import metrics, ssh_socket
     from .deckconfig import config_dir
 except ImportError:
+    import metrics
     import ssh_socket
     from deckconfig import config_dir
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 MAX_BYTES = 16 * 1024
 # What a profile may carry besides the SSH profile fields.
-EXTRA_KEYS = ("label", "mcp_tool_prefix", "default_baud", "default_mode")
+EXTRA_KEYS = ("label", "mcp_tool_prefix", "default_baud", "default_mode", "metrics")
 PROFILE_KEYS = ("remote_socket", "control_socket", "screen_path", "restart_args", "restart_conf_hint",
                 "follow_socket_suffix", "screen_revision_header", "screen_size_header", "user")
 
@@ -82,6 +86,11 @@ def clean(name: str, raw: Any) -> dict[str, Any]:
         if mode not in ("control", "linux"):
             raise ProfileError("default_mode must be control or linux")
         result["default_mode"] = mode
+    if "metrics" in raw:
+        try:
+            result["metrics"] = metrics.clean_rules(raw["metrics"])
+        except metrics.MetricsError as exc:
+            raise ProfileError(f"metrics: {exc}") from exc
     result["name"] = name
     return result
 
