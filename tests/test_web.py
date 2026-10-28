@@ -677,6 +677,60 @@ class MetricsUiTest(unittest.TestCase):
         self.assertIn("createElementNS", page_block(self.script, "METRICS-UI"))  # sparkline without innerHTML
 
 
+JS_PIN_CASES = r"""
+const R = o => Object.assign({id: 'r', label: 'R', before: 'x=', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false}, o);
+const M = (...vs) => ({samples: vs.map((v, i) => ({n: i + 1, time: 't', v})), last: vs[vs.length - 1]});
+const results = {};
+const rules = [R({id: 'heap', label: 'Free', unit: 'KB', pin: true, warn_below: 64}), R({id: 'quiet', label: 'Quiet', pin: false}),
+               R({id: 'cpu', label: 'CPU', unit: '%', pin: true, warn_above: 90}), R({id: 'new', label: 'New', pin: true})];
+const metrics = {heap: M(100, 50), quiet: M(1), cpu: M(95)};
+results.pins = metricPinList(rules, metrics, new Map()).map(p => [p.id, p.text, p.state, p.badge]);
+results.none = metricPinList([R({id: 'a'})], {a: M(1)}, new Map()).length;
+results.hostile = metricPinList([R({id: 'e', label: '<img src=x onerror=1>', unit: '<b>', pin: true})], {e: M(5)}, new Map())[0].text;
+results.ok = metricPinList([R({id: 'ok', label: 'Ok', unit: 'KB', pin: true, warn_below: 10})], {ok: M(10)}, new Map())[0].badge;
+console.log(JSON.stringify(results));
+"""
+
+class MetricsPinTest(unittest.TestCase):
+    """Pinned metrics in the status bar reuse the card model."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.script = page_script()
+        if "function metricPinList(" not in cls.script:
+            raise AssertionError("the page has no pin list yet")
+        cls.r = run_page_js(cls.script, ("METRICS-ENGINE", "METRICS-CARD"), JS_PIN_CASES)
+
+    def test_only_pinned_rules_appear_with_label_value_and_unit(self):
+        self.assertEqual([p[0] for p in self.r["pins"]], ["heap", "cpu", "new"])
+        self.assertEqual(self.r["pins"][0][1], "Free 50 KB")
+        self.assertEqual(self.r["pins"][2][1], "New --")  # pinned but no value yet: shown as --, never hidden
+        self.assertEqual(self.r["none"], 0)
+
+    def test_an_out_of_range_pin_carries_its_badge_text(self):
+        self.assertEqual((self.r["pins"][0][2], self.r["pins"][0][3]), ("low", "low"))
+        self.assertEqual((self.r["pins"][1][2], self.r["pins"][1][3]), ("high", "high"))
+        self.assertEqual(self.r["ok"], "")
+
+    def test_pin_text_keeps_user_text_raw_for_textcontent(self):
+        self.assertEqual(self.r["hostile"], "<img src=x onerror=1> 5 <b>")
+
+    def test_status_bar_has_the_pin_slot_and_draws_it_with_dom_nodes_on_the_one_second_tick(self):
+        page = served_page()
+        self.assertIn('id="sbPins"', page)
+        status = self.script.split("function renderStatusBar() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("renderPins()", status)
+        pins = self.script.split("function renderPins() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("metricPinList(", pins)
+        self.assertIn("mkEl('span'", pins)  # mkEl sets textContent
+        self.assertIn("createTextNode(", pins)
+        self.assertNotIn("innerHTML", pins)
+
+    def test_pins_follow_the_active_connection(self):
+        pins = self.script.split("function renderPins() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("ensureConn(connId).metrics", pins)
+
+
 class SmallWindowLogLayoutTest(unittest.TestCase):
     """Shrinking the window made the log grow to every line instead of scrolling."""
 

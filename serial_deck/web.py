@@ -2174,6 +2174,7 @@ HTML_PAGE = """<!DOCTYPE html>
     .kb span { margin-left: auto; color: #e2e2e8; }
     kbd { padding: 0 5px; border: 1px solid #3b494c; border-radius: 3px; background: #111318; font-size: 10px; }
 .metric-low, .metric-high { border-color: #ffb778; }
+.metric-pin.metric-low, .metric-pin.metric-high { color: #ffb778; font-weight: 700; }
 .metric-badge { margin-left: 8px; padding: 0 6px; border-radius: 3px; font-size: 10px; font-weight: 700; color: #00210d; background: #ffb778; }
 .spark { padding: 8px; background: #1e2024; border: 1px solid #3b494c; border-radius: 6px; }
     .tl-row { display: flex; align-items: baseline; gap: .6rem; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
@@ -2708,6 +2709,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <span id="sbFollow"></span>
         <span id="sbRate" title="Measured from what this window received in the last second (line text only in Control mode)">RX --</span>
         <span id="sbLines"></span>
+        <span id="sbPins" class="hidden flex items-center gap-3" aria-label="Pinned metrics"></span>
         <span id="sbTotals" title="Bytes this window has received and sent on this connection since it was opened"></span>
         <span id="sbTrim" class="hidden text-brand-warning" title="Oldest lines dropped from this window's buffer (limit 20000). The hub keeps its own history."></span>
         <span class="ml-auto hidden lg:inline">Click a line · Enter details · C copy line</span>
@@ -3318,6 +3320,13 @@ HTML_PAGE = """<!DOCTYPE html>
     function metricCardList(rules, metrics, sources) {
       return rules.map(rule => metricCardModel(rule, metrics[rule.id], sources.get(rule.id) || 'user'));
     }
+
+    // Pinned rules for the status bar: [{id, text, state, badge, icon}], same model (and same numbers) as the cards.
+    function metricPinList(rules, metrics, sources) {
+      return metricCardList(rules, metrics, sources).filter(m => m.pin).map(m => ({
+        id: m.id, state: m.state, badge: m.badge, icon: m.icon,
+        text: m.label + ' ' + m.valueText + (m.unit && m.count ? ' ' + m.unit : '') }));
+    }
     // METRICS-CARD-END
 
     // METRICS-UI-BEGIN
@@ -3534,6 +3543,21 @@ HTML_PAGE = """<!DOCTYPE html>
     function renderMetrics() {
       const sources = new Map(metricConfig.rules.map(r => [r.id, r.source]));
       metricEl('metricCards').replaceChildren(...metricCardList(metricRules, ensureConn(connId).metrics, sources).map(metricCard));
+    }
+
+    function renderPins() {
+      const pins = metricPinList(metricRules, ensureConn(connId).metrics, new Map());
+      const box = metricEl('sbPins');
+      box.replaceChildren(...pins.map(p => {
+        const item = mkEl('span', 'metric-pin' + (p.state !== 'ok' ? ' metric-' + p.state : ''), p.text);
+        item.title = 'Pinned metric (Telemetry tab)';
+        if (p.badge) {
+          const icon = mkEl('i'); icon.className = p.icon; icon.setAttribute('aria-hidden', 'true');
+          item.append(document.createTextNode(' '), icon, document.createTextNode(' ' + p.badge));
+        }
+        return item;
+      }));
+      box.classList.toggle('hidden', !pins.length);
     }
 
     function renderMetricsUi() {
@@ -3942,6 +3966,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function renderStatusBar() {
+      renderPins();
       const conn = ensureConn(connId), st = conn.status || {};
       const s = connState(conn);
       const icon = document.createElement('i');
