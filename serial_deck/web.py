@@ -2173,6 +2173,8 @@ HTML_PAGE = """<!DOCTYPE html>
     .kb { display: flex; align-items: center; gap: 4px; padding: 1px 0; color: #bac9cc; }
     .kb span { margin-left: auto; color: #e2e2e8; }
     kbd { padding: 0 5px; border: 1px solid #3b494c; border-radius: 3px; background: #111318; font-size: 10px; }
+.metric-low, .metric-high { border-color: #ffb778; }
+.metric-badge { margin-left: 8px; padding: 0 6px; border-radius: 3px; font-size: 10px; font-weight: 700; color: #00210d; background: #ffb778; }
 .spark { padding: 8px; background: #1e2024; border: 1px solid #3b494c; border-radius: 6px; }
     .tl-row { display: flex; align-items: baseline; gap: .6rem; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
     .tl-row:hover { background: rgba(255,255,255,.05); }
@@ -3185,7 +3187,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     // A rule draft for a field found by discoverFields (the `before` text is kept exactly as seen).
     function draftFromField(field, takenIds) {
-      const key = field.before.replace(/[\s=:]+$/, '');
+      const key = field.before.replace(/[\\s=:]+$/, '');
       return { id: ruleIdFromKey(key, takenIds), label: key.slice(0, 40), before: field.before, tag: field.tag,
                unit: '', scale: 1, warn_below: null, warn_above: null, pin: false };
     }
@@ -3286,6 +3288,37 @@ HTML_PAGE = """<!DOCTYPE html>
       });
     }
     // METRICS-ENGINE-END
+
+    // METRICS-CARD-BEGIN
+    // ---- Card model: pure data, shared by the Telemetry cards and the status-bar pins ----
+    const METRIC_BADGE = { low: { text: 'low', icon: 'fa-solid fa-arrow-down' }, high: { text: 'high', icon: 'fa-solid fa-arrow-up' } };
+
+    // Short number text: whole numbers stay whole, small ones keep up to 3 decimals, others two.
+    function fmtMetric(v) {
+      if (!isFinite(v)) return '--';
+      const a = Math.abs(v);
+      if (a >= 1000 || Number.isInteger(v)) return String(Math.round(v));
+      if (a >= 100) return String(Math.round(v * 10) / 10);
+      if (a >= 1) return String(Math.round(v * 100) / 100);
+      return String(Math.round(v * 1000) / 1000);
+    }
+
+    function metricCardModel(rule, metric, source) {
+      const values = metric ? metric.samples.map(s => s.v) : [];
+      const last = values.length ? values[values.length - 1] : null;
+      const state = last === null ? 'ok' : metricState(rule, last);
+      const badge = METRIC_BADGE[state];
+      return { id: rule.id, label: rule.label, unit: rule.unit, source: source === 'profile' ? 'profile' : 'yours',
+               pin: rule.pin, state, badge: badge ? badge.text : '', icon: badge ? badge.icon : '',
+               valueText: last === null ? '--' : fmtMetric(last), values, count: values.length,
+               min: values.length ? Math.min(...values) : null, max: values.length ? Math.max(...values) : null };
+    }
+
+    // One model per rule, in rule order; samples whose rule is gone are never shown. `sources`: rule id -> 'user'|'profile'.
+    function metricCardList(rules, metrics, sources) {
+      return rules.map(rule => metricCardModel(rule, metrics[rule.id], sources.get(rule.id) || 'user'));
+    }
+    // METRICS-CARD-END
 
     // METRICS-UI-BEGIN
     // ---- Metrics editor on the Telemetry tab. All user-controlled text goes through textContent. ----
@@ -3462,6 +3495,47 @@ HTML_PAGE = """<!DOCTYPE html>
       refreshDraftMatches();
     }
 
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    function sparkNode(values) {
+      const w = 140, h = 28;
+      const svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('width', w); svg.setAttribute('height', h);
+      svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'trend');
+      if (values.length) {
+        const lo = Math.min(...values), span = (Math.max(...values) - lo) || 1;
+        const pts = values.map((v, i) => (values.length === 1 ? w : (i * w) / (values.length - 1)).toFixed(1) + ',' +
+          (h - 2 - ((v - lo) / span) * (h - 4)).toFixed(1)).join(' ');
+        const line = document.createElementNS(SVG_NS, 'polyline');
+        line.setAttribute('fill', 'none'); line.setAttribute('stroke', '#00daf3'); line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('points', pts);
+        svg.appendChild(line);
+      }
+      return svg;
+    }
+
+    function metricCard(m) {
+      const card = mkEl('div', 'spark metric-card' + (m.state !== 'ok' ? ' metric-' + m.state : ''));
+      const head = mkEl('div', 'flex items-center gap-1');
+      head.append(mkEl('span', 'mono text-[11px] text-brand-muted truncate', m.label), mkEl('span', 'tl-src', m.source));
+      const value = mkEl('div', 'mono text-sm text-brand-text', m.valueText + (m.unit && m.count ? ' ' + m.unit : ''));
+      if (m.badge) {
+        const badge = mkEl('span', 'metric-badge');
+        const icon = mkEl('i'); icon.className = m.icon; icon.setAttribute('aria-hidden', 'true');
+        badge.append(icon, document.createTextNode(' ' + m.badge));
+        value.appendChild(badge);
+      }
+      card.append(head, value, sparkNode(m.values),
+                  mkEl('div', 'mono text-[10px] text-brand-muted', m.count
+                    ? 'min ' + fmtMetric(m.min) + ' · max ' + fmtMetric(m.max) + ' · ' + m.count + ' samples'
+                    : 'no value seen yet'));
+      return card;
+    }
+
+    function renderMetrics() {
+      const sources = new Map(metricConfig.rules.map(r => [r.id, r.source]));
+      metricEl('metricCards').replaceChildren(...metricCardList(metricRules, ensureConn(connId).metrics, sources).map(metricCard));
+    }
+
     function renderMetricsUi() {
       const problems = metricEl('metricProblems');
       problems.replaceChildren(...metricConfig.problems.map(p => mkEl('div', 'text-brand-danger', p)));
@@ -3475,6 +3549,7 @@ HTML_PAGE = """<!DOCTYPE html>
       metricEl('metricDiscovery').replaceChildren(...(fields.length ? fields.map(fieldRow)
         : [mkEl('div', 'text-brand-muted', 'No key=value numbers seen in the log yet.')]));
       renderDraftForm();
+      renderMetrics();
     }
     // METRICS-UI-END
 
@@ -3898,6 +3973,7 @@ HTML_PAGE = """<!DOCTYPE html>
         c.rxBps = c.rxBytes - c.lastRx; c.lastRx = c.rxBytes;
       });
       renderStatusBar();
+      if (activeTab === 'inspector' && currentPage === 'deck') renderMetrics();
     }, 1000);
 
     // ---- TX composer: collapsing keeps the draft and the history ----
@@ -5006,7 +5082,7 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('logCountBadge').innerText = conn.logsBuffer.length;
       document.getElementById('eventCountBadge').innerText = conn.eventsBuffer.length;
       refreshTagList();
-      if (activeTab === 'inspector') renderSparks();
+      if (activeTab === 'inspector') { renderSparks(); renderMetricsUi(); }
       syncPauseUi();
       applyLogFilter();
       conn.eventsBuffer.forEach(renderEventEntry);

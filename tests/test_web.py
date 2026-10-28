@@ -605,6 +605,78 @@ class MetricsEditorTest(unittest.TestCase):
         self.assertIn("textContent", ui)
 
 
+JS_CARD_CASES = r"""
+const R = o => Object.assign({id: 'r', label: 'R', before: 'x=', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false}, o);
+const M = (...vs) => ({samples: vs.map((v, i) => ({n: i + 1, time: 't', v})), last: vs[vs.length - 1]});
+const results = {};
+results.fmt = [186, 175.8046875, 0.5, 0.0123, 190464.4, -3, 0, 99.999, 1000.4, 2.5, 12.25, -0.0456].map(fmtMetric);
+results.low = metricCardModel(R({id: 'heap', label: 'Free', unit: 'KB', warn_below: 64}), M(100, 70, 50), 'user');
+results.boundary = metricCardModel(R({warn_below: 64}), M(70, 64), 'profile').state;
+results.high = metricCardModel(R({warn_above: 90}), M(10, 95), 'profile');
+results.empty = metricCardModel(R({label: 'Idle'}), undefined, 'user');
+results.raw = metricCardModel(R({label: '<img src=x onerror=alert(1)>', unit: '<b>'}), M(1), 'user');
+const rules = [R({id: 'a'}), R({id: 'b'})];
+results.stale = metricCardList(rules, {a: M(1), gone: M(9)}, new Map([['a', 'user']])).map(c => [c.id, c.count, c.source]);
+const c1 = {a: M(1, 2)}, c2 = {a: M(7)};
+results.twoConnections = [metricCardList(rules, c1, new Map()).map(c => c.valueText), metricCardList(rules, c2, new Map()).map(c => c.valueText)];
+results.order = metricCardList([R({id: 'z'}), R({id: 'a'})], {}, new Map()).map(c => c.id);
+console.log(JSON.stringify(results));
+"""
+
+class MetricsUiTest(unittest.TestCase):
+    """Metric cards: the model is pure and runs in node; drawing is checked by markup."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.script = page_script()
+        if "METRICS-CARD-BEGIN" not in cls.script:
+            raise AssertionError("the page has no card model block yet")
+        cls.r = run_page_js(cls.script, ("METRICS-ENGINE", "METRICS-CARD"), JS_CARD_CASES)
+
+    def test_value_formatting_is_short_and_keeps_the_sign(self):
+        self.assertEqual(self.r["fmt"], ["186", "175.8", "0.5", "0.012", "190464", "-3", "0", "100", "1000", "2.5",
+                                         "12.25", "-0.046"])
+
+    def test_a_value_below_warn_below_is_low_with_text_and_icon_and_min_max_count(self):
+        m = self.r["low"]
+        self.assertEqual((m["state"], m["badge"], m["valueText"], m["unit"], m["min"], m["max"], m["count"], m["source"]),
+                         ("low", "low", "50", "KB", 50, 100, 3, "yours"))
+        self.assertTrue(m["icon"])  # the badge is never colour alone
+
+    def test_the_limit_itself_is_not_a_warning_and_high_works(self):
+        self.assertEqual(self.r["boundary"], "ok")
+        self.assertEqual((self.r["high"]["state"], self.r["high"]["badge"], self.r["high"]["source"]), ("high", "high", "profile"))
+
+    def test_a_rule_with_no_samples_shows_a_dash_not_a_value(self):
+        e = self.r["empty"]
+        self.assertEqual((e["valueText"], e["state"], e["count"], e["badge"], e["values"]), ("--", "ok", 0, "", []))
+
+    def test_model_keeps_user_text_raw_for_textcontent_to_escape(self):
+        self.assertEqual(self.r["raw"]["label"], "<img src=x onerror=alert(1)>")
+        self.assertEqual(self.r["raw"]["unit"], "<b>")
+
+    def test_card_list_follows_the_rules_so_a_deleted_rules_card_disappears(self):
+        self.assertEqual(self.r["stale"], [["a", 1, "yours"], ["b", 0, "yours"]])  # "gone" has samples but no rule
+        self.assertEqual(self.r["order"], ["z", "a"])
+
+    def test_each_connection_shows_its_own_samples(self):
+        self.assertEqual(self.r["twoConnections"], [["2", "--"], ["7", "--"]])
+
+    def test_cards_are_drawn_once_a_second_while_the_tab_is_open_and_on_tab_and_connection_switch(self):
+        tick = self.script.split("setInterval(() => {", 1)[1].split("}, 1000);", 1)[0]
+        self.assertIn("renderMetrics()", tick)
+        self.assertIn("activeTab === 'inspector'", tick)
+        switch = self.script.split("function switchConnection(id) {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("renderMetricsUi()", switch)
+        self.assertIn("renderMetrics();", page_block(self.script, "METRICS-UI").split("function renderMetricsUi() {", 1)[1])
+
+    def test_card_drawing_uses_the_card_model_and_dom_nodes(self):
+        ui = page_block(self.script, "METRICS-UI").split("function renderMetrics() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("metricCardList(", ui)
+        self.assertIn("textContent", ui + page_block(self.script, "METRICS-UI"))
+        self.assertIn("createElementNS", page_block(self.script, "METRICS-UI"))  # sparkline without innerHTML
+
+
 class SmallWindowLogLayoutTest(unittest.TestCase):
     """Shrinking the window made the log grow to every line instead of scrolling."""
 
