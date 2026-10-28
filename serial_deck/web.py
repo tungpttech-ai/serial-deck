@@ -2946,7 +2946,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function ensureConn(id) {
       if (!conns[id]) {
         conns[id] = { logsBuffer: [], eventsBuffer: [], rawChunks: [], rawBytes: 0, status: {}, eventSource: null,
-          termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Map(), trimmed: 0, fsmLog: [], lastFsm: undefined,
+          termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Map(), trimmed: 0, fsmLog: [], lastFsm: undefined, metrics: {},
           lines: 0, lastLines: 0, rate: 0, rxBytes: 0, lastRx: 0, rxBps: 0, txBytes: 0, telHist: {}, telLast: '', connecting: false, error: false };
         if (!connOrder.includes(id)) connOrder.push(id);
       }
@@ -3073,6 +3073,102 @@ HTML_PAGE = """<!DOCTYPE html>
       return entry._p;
     }
 
+    // METRICS-ENGINE-BEGIN
+    // ---- Custom metrics: a rule is the literal text before a number (see serial_deck/metrics.py) ----
+    // Extraction is indexOf plus one fixed number grammar, scanned by hand: no user regex, so no rule can
+    // stall the page. Samples are per connection and window-local.
+    const METRIC_SAMPLES = 600;
+    let metricRules = [];
+
+    function isDigit(code) { return code >= 48 && code <= 57; }
+
+    // End index of a number that starts at `i`: -?[0-9]+(.[0-9]+)?([eE][+-]?[0-9]+)?  (ASCII only), or -1.
+    function numberEnd(text, i) {
+      const n = text.length;
+      let j = i;
+      if (text.charCodeAt(j) === 45) j++;
+      let k = j;
+      while (k < n && isDigit(text.charCodeAt(k))) k++;
+      if (k === j) return -1;
+      j = k;
+      if (text.charCodeAt(j) === 46 && isDigit(text.charCodeAt(j + 1))) {
+        j++;
+        while (j < n && isDigit(text.charCodeAt(j))) j++;
+      }
+      const e = text.charCodeAt(j);
+      if (e === 101 || e === 69) {
+        let m = j + 1;
+        const sign = text.charCodeAt(m);
+        if (sign === 43 || sign === 45) m++;
+        if (isDigit(text.charCodeAt(m))) {
+          while (m < n && isDigit(text.charCodeAt(m))) m++;
+          j = m;
+        }
+      }
+      return j;
+    }
+
+    // The scaled number after the first `before` that is followed by a valid number, else null.
+    function extractMetric(rule, entry) {
+      const text = entry.text;
+      if (typeof text !== 'string' || entry.level === 'tx' || entry.level === 'elf') return null;
+      if (rule.tag) {
+        const p = parsedLine(entry);
+        if (!p || p.tag !== rule.tag) return null;
+      }
+      const before = rule.before;
+      let from = 0;
+      for (;;) {
+        const at = text.indexOf(before, from);
+        if (at < 0) return null;
+        const start = at + before.length;
+        const end = numberEnd(text, start);
+        if (end > 0) {
+          const value = Number(text.slice(start, end)) * rule.scale;
+          return isFinite(value) ? value : null;
+        }
+        from = at + 1;
+      }
+    }
+
+    function metricState(rule, value) {
+      if (rule.warn_below !== null && value < rule.warn_below) return 'low';
+      if (rule.warn_above !== null && value > rule.warn_above) return 'high';
+      return 'ok';
+    }
+
+    function recordMetric(conn, rule, entry) {
+      const v = extractMetric(rule, entry);
+      if (v === null) return;
+      const m = conn.metrics[rule.id] || (conn.metrics[rule.id] = { samples: [], last: null });
+      m.samples.push({ n: entry._n, time: entry.time || '', v });
+      if (m.samples.length > METRIC_SAMPLES) m.samples.shift();
+      m.last = v;
+    }
+
+    function noteMetrics(conn, entry) {
+      for (let i = 0; i < metricRules.length; i++) recordMetric(conn, metricRules[i], entry);
+    }
+
+    function resetMetrics(conn) { conn.metrics = {}; }
+
+    // Replace the rule set. Samples of removed ids go; only added or changed rules rescan the buffer.
+    function setMetricRules(rules) {
+      const before = new Map(metricRules.map(r => [r.id, JSON.stringify(r)]));
+      const rescan = rules.filter(r => before.get(r.id) !== JSON.stringify(r));
+      const keep = new Set(rules.map(r => r.id));
+      metricRules = rules;
+      Object.keys(conns).forEach(id => {
+        const conn = conns[id];
+        Object.keys(conn.metrics).forEach(rid => { if (!keep.has(rid)) delete conn.metrics[rid]; });
+        rescan.forEach(rule => {
+          delete conn.metrics[rule.id];
+          for (let i = 0; i < conn.logsBuffer.length; i++) recordMetric(conn, rule, conn.logsBuffer[i]);
+        });
+      });
+    }
+    // METRICS-ENGINE-END
+
     function adopt(conn, entry) {
       entry._n = ++conn.seq;
       const p = parsedLine(entry);
@@ -3081,6 +3177,7 @@ HTML_PAGE = """<!DOCTYPE html>
         else if (conn.tags.size < 500) { conn.tags.set(p.tag, 1); tagsDirty = true; }
         noteFsmLog(conn, entry);
       }
+      noteMetrics(conn, entry);
     }
 
     function trimBuffer(conn) {
@@ -4474,6 +4571,7 @@ HTML_PAGE = """<!DOCTYPE html>
         conn.status = event.status || {};
         if (event.logs) {
           conn.logsBuffer = event.logs; conn.seq = 0; conn.pauseSeq = null; conn.tags.clear(); conn.trimmed = 0; conn.fsmLog = []; conn.lastFsm = undefined;
+          resetMetrics(conn);
           conn.logsBuffer.forEach(e => adopt(conn, e));
           tagsDirty = true;
         }

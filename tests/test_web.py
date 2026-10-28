@@ -313,6 +313,167 @@ class ConsoleP2Test(unittest.TestCase):
         self.assertIn("function tagColor(tag)", HTML_PAGE)
 
 
+JS_METRIC_CASES = r"""
+const R = o => Object.assign({id: 'r', label: 'R', before: '', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false}, o);
+const L = (text, level = 'info') => ({text, level, time: '12:00:00.000'});
+const N = (text, n, level = 'plain') => Object.assign(L(text, level), {_n: n});
+const results = {};
+const line = 'I (1) sys_monitor: heap: internal_free=190464 internal_min=1';
+results.heap = extractMetric(R({before: 'internal_free=', tag: 'sys_monitor'}), L(line));
+results.heapKb = extractMetric(R({before: 'internal_free=', tag: 'sys_monitor', scale: 1 / 1024}), L(line));
+results.otherTag = extractMetric(R({before: 'internal_free=', tag: 'wifi'}), L(line));
+results.plain = extractMetric(R({before: 'temp='}), L('temp=25', 'plain'));
+results.taggedOnPlain = extractMetric(R({before: 'temp=', tag: 'x'}), L('temp=25', 'plain'));
+results.notNumbers = ['temp=abc', 'x=', 'x=1e999', 'x=-', 'x=+5', 'x=.5']
+  .map(t => extractMetric(R({before: t.slice(0, t.indexOf('=') + 1)}), L(t, 'plain')));
+results.shapes = ['x=-3', 'x=2.5', 'x=1e3', 'x=12345', 'x=12.', 'x=1e', 'x=007']
+  .map(t => extractMetric(R({before: 'x='}), L(t, 'plain')));
+results.firstValid = extractMetric(R({before: 'temp='}), L('temp=n/a temp=7', 'plain'));
+results.txElf = ['tx', 'elf'].map(lv => extractMetric(R({before: 'temp='}), L('temp=5', lv)));
+results.overflowAfterScale = extractMetric(R({before: 'x=', scale: 1e308}), L('x=1e10', 'plain'));
+results.noText = extractMetric(R({before: 'x='}), {level: 'info'});
+results.state = [metricState(R({warn_below: 64}), 64), metricState(R({warn_below: 64}), 63.9),
+  metricState(R({warn_above: 90}), 90), metricState(R({warn_above: 90}), 90.1), metricState(R({}), 5)];
+
+const buf = n => Array.from({length: n}, (_, i) => N('I (' + i + ') t: a=' + i + ' b=' + (i * 2), i + 1, 'info'));
+conns.a = {logsBuffer: buf(5), metrics: {}};
+conns.b = {logsBuffer: buf(3), metrics: {}};
+const ra = R({id: 'ra', before: 'a='}), rb = R({id: 'rb', before: 'b='});
+setMetricRules([ra]);
+results.rescan = [conns.a.metrics.ra.samples.map(s => s.v), conns.b.metrics.ra.samples.map(s => s.v), conns.a.metrics.ra.last];
+const kept = conns.a.metrics.ra;
+setMetricRules([ra, rb]);
+results.unchangedRuleNotRescanned = conns.a.metrics.ra === kept;
+results.addedRule = conns.a.metrics.rb.samples.map(s => s.v);
+setMetricRules([ra, Object.assign({}, rb, {before: 'a='})]);
+results.changedRuleReplaced = conns.a.metrics.rb.samples.map(s => s.v);
+setMetricRules([rb]);
+results.afterRemoval = [Object.keys(conns.a.metrics), Object.keys(conns.b.metrics)];
+
+setMetricRules([ra]);
+const live = {logsBuffer: [], metrics: {}};
+[1, 2, 3].forEach(i => noteMetrics(live, N('a=' + i, i)));
+results.live = [live.metrics.ra.samples.map(s => [s.n, s.v, s.time]), live.metrics.ra.last];
+const big = {logsBuffer: [], metrics: {}};
+for (let i = 1; i <= 700; i++) noteMetrics(big, N('a=' + i, i));
+results.cap = [big.metrics.ra.samples.length, big.metrics.ra.samples[0].v, big.metrics.ra.last];
+const replay = {logsBuffer: [], metrics: {}};
+const events = [1, 2, 3].map(i => N('a=' + i, i));
+events.forEach(e => noteMetrics(replay, e));
+resetMetrics(replay);
+events.forEach(e => noteMetrics(replay, e));
+results.replaySamples = replay.metrics.ra.samples.length;
+const c1 = {logsBuffer: [], metrics: {}}, c2 = {logsBuffer: [], metrics: {}};
+noteMetrics(c1, N('a=1', 1));
+results.separate = [Object.keys(c1.metrics).length, Object.keys(c2.metrics).length];
+
+const rules32 = Array.from({length: 32}, (_, i) => R({id: 'k' + i, before: 'k' + i + '='}));
+conns.big = {logsBuffer: Array.from({length: 21000}, (_, i) =>
+  N('I (' + i + ') sys: k0=' + i + ' k5=' + (i % 7) + ' k31=1.5 padding padding padding', i + 1, 'info')), metrics: {}};
+let t0 = Date.now();
+setMetricRules(rules32);
+results.rescanMs = Date.now() - t0;
+results.bigKeys = Object.keys(conns.big.metrics).sort().join();
+results.bigSamples = conns.big.metrics.k0.samples.length;
+t0 = Date.now();
+results.hugeNoMatch = extractMetric(R({before: 'temp='}), L('x'.repeat(100000), 'plain'));
+results.hugeMs = Date.now() - t0;
+t0 = Date.now();
+results.worstNoNumber = extractMetric(R({before: 'a'}), L('a'.repeat(100000), 'plain'));
+results.worstMs = Date.now() - t0;
+console.log(JSON.stringify(results));
+"""
+
+class MetricsEngineTest(unittest.TestCase):
+    """The page's metric engine, run in node with the real page source."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            raise unittest.SkipTest("node is not installed")
+        cls.script = re.findall(r"<script>(.*?)</script>", served_page(), re.S)[-1]
+        if "METRICS-ENGINE-BEGIN" not in cls.script:
+            raise AssertionError("the page has no metric engine block yet")
+        idf = re.search(r"    const IDF_RE = .*?;\n", cls.script).group(0)
+        parsed = cls.script[cls.script.index("    function parsedLine(entry) {"):]
+        parsed = parsed[:parsed.index("\n    }\n") + 7]
+        engine = cls.script.split("// METRICS-ENGINE-BEGIN", 1)[1].split("// METRICS-ENGINE-END", 1)[0]
+        program = "const conns = {};\n" + idf + parsed + engine + JS_METRIC_CASES
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "engine.js"
+            path.write_text(program, encoding="utf-8")
+            done = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=120)
+        if done.returncode != 0:
+            raise AssertionError(done.stderr[-800:])
+        cls.r = json.loads(done.stdout.strip().splitlines()[-1])
+        print(f"\nmetrics worst case: rescan 21000 lines x 32 rules {cls.r['rescanMs']} ms, "
+              f"100 KB no-match line {cls.r['hugeMs']} ms, 100 KB repeated-prefix line {cls.r['worstMs']} ms")
+
+    def test_extracts_the_number_after_the_text_on_a_tagged_line(self):
+        self.assertEqual(self.r["heap"], 190464)
+        self.assertEqual(self.r["heapKb"], 186)
+
+    def test_tag_must_match_and_untagged_rules_read_plain_lines(self):
+        self.assertIsNone(self.r["otherTag"])
+        self.assertIsNone(self.r["taggedOnPlain"])
+        self.assertEqual(self.r["plain"], 25)
+
+    def test_non_numbers_and_overflow_are_skipped(self):
+        self.assertEqual(self.r["notNumbers"], [None] * 6)
+        self.assertIsNone(self.r["overflowAfterScale"])
+        self.assertIsNone(self.r["noText"])
+
+    def test_number_grammar_signs_decimals_exponents_and_line_end(self):
+        self.assertEqual(self.r["shapes"], [-3, 2.5, 1000, 12345, 12, 1, 7])
+
+    def test_first_valid_occurrence_wins(self):
+        self.assertEqual(self.r["firstValid"], 7)
+
+    def test_tx_echo_and_symbolized_lines_are_never_measured(self):
+        self.assertEqual(self.r["txElf"], [None, None])
+
+    def test_state_boundaries_are_strict(self):
+        self.assertEqual(self.r["state"], ["ok", "low", "ok", "high", "ok"])
+
+    def test_set_rules_rescans_only_added_or_changed_rules_and_drops_removed(self):
+        self.assertEqual(self.r["rescan"], [[0, 1, 2, 3, 4], [0, 1, 2], 4])
+        self.assertTrue(self.r["unchangedRuleNotRescanned"])
+        self.assertEqual(self.r["addedRule"], [0, 2, 4, 6, 8])
+        self.assertEqual(self.r["changedRuleReplaced"], [0, 1, 2, 3, 4])  # replaced, not appended
+        self.assertEqual(self.r["afterRemoval"], [["rb"], ["rb"]])
+
+    def test_live_samples_keep_line_number_time_and_cap_at_600(self):
+        self.assertEqual(self.r["live"], [[[1, 1, "12:00:00.000"], [2, 2, "12:00:00.000"], [3, 3, "12:00:00.000"]],
+                                          3])
+        self.assertEqual(self.r["cap"], [600, 101, 700])
+
+    def test_init_replay_does_not_duplicate_and_connections_stay_separate(self):
+        self.assertEqual(self.r["replaySamples"], 3)
+        self.assertEqual(self.r["separate"], [1, 0])
+
+    def test_worst_case_rescan_and_huge_lines_stay_fast(self):
+        self.assertEqual(self.r["bigKeys"], "k0,k31,k5")
+        self.assertEqual(self.r["bigSamples"], 600)
+        self.assertLess(self.r["rescanMs"], 2000)
+        self.assertIsNone(self.r["hugeNoMatch"])
+        self.assertIsNone(self.r["worstNoNumber"])
+        self.assertLess(self.r["hugeMs"], 500)
+        self.assertLess(self.r["worstMs"], 500)
+
+    def test_lifecycle_hooks_are_wired(self):
+        script = self.script
+        self.assertIn("noteMetrics(conn, entry);", script.split("function adopt(conn, entry) {", 1)[1].split("\n    }\n", 1)[0])
+        init = script.split("if (event.type === 'init') {", 1)[1].split("} else if (event.type === 'status')", 1)[0]
+        self.assertLess(init.index("resetMetrics(conn)"), init.index("conn.logsBuffer.forEach(e => adopt(conn, e))"))
+        self.assertIn("metrics: {}", script.split("function ensureConn(id) {", 1)[1].split("\n    }\n", 1)[0])
+        for name in ("clearCurrentLogs", "clearSplitLogs", "trimBuffer"):
+            body = script.split(f"function {name}(", 1)[1].split("\n    }\n", 1)[0]
+            self.assertNotIn("metrics", body, name)  # samples are trends, not log lines
+
+
 class SmallWindowLogLayoutTest(unittest.TestCase):
     """Shrinking the window made the log grow to every line instead of scrolling."""
 
