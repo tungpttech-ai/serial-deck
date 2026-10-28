@@ -441,6 +441,49 @@ class HubSupervisionTest(ScriptEnvironment):
             time.sleep(1.5)
             self.assertEqual(self.control("script_logs", id=run_id)["run"]["state"], "running")
 
+    def _fake_autorun(self, attached):
+        run = script_supervisor.ScriptRun("sx", "ghost", self.device.port, 115200, True)
+        run.attached = attached
+        self.hub.scripts.runs[run.id] = run
+        self.addCleanup(self.hub.scripts.runs.pop, run.id, None)
+        return run
+
+    def test_a_dashboard_is_not_mistaken_for_a_runner_that_has_not_attached(self):
+        self.manager.claim_port(self.device.port, 115200)
+        self._fake_autorun(attached=False)  # started, data socket not open yet
+        from serial_deck.uart_client import open_uart_transport
+        dashboard = open_uart_transport(self.manager.endpoint, 115200, 0.2)
+        self.addCleanup(dashboard.close)
+        channel = next(iter(self.hub.channels.values()))
+        eventually(lambda: self.hub.real_clients(channel) == 1)
+        with self.assertRaises(RuntimeError):
+            self.hub.request_shutdown(commit=False)
+
+    def test_an_attached_runner_is_not_a_real_client(self):
+        self.manager.claim_port(self.device.port, 115200)
+        self._fake_autorun(attached=True)
+        from serial_deck.uart_client import open_uart_transport
+        runner = open_uart_transport(self.manager.endpoint, 115200, 0.2)
+        self.addCleanup(runner.close)
+        channel = next(iter(self.hub.channels.values()))
+        eventually(lambda: len(channel.clients) == 1)
+        self.assertEqual(self.hub.real_clients(channel), 0)
+
+    def test_runner_attached_rejects_unknown_and_manual_runs(self):
+        with self.assertRaises(Exception):
+            self.control("runner_attached", id="nope")
+        run = self._fake_autorun(attached=False)
+        run.autorun = False  # a user-started script is a client, never marked
+        with self.assertRaises(Exception):
+            self.control("runner_attached", id=run.id)
+        self.assertFalse(run.attached)
+
+    def test_a_real_autorun_runner_reports_attached(self):
+        self.write_script("auto3", "def on_line(dev, line):\n    pass\n")
+        self.control("script_autorun", name="auto3", enabled=True, match={"port": self.device.port})
+        self.manager.claim_port(self.device.port, 115200)
+        eventually(lambda: any(r.attached for r in self.hub.scripts.runs.values()), timeout=20)
+
     def test_autorun_does_not_start_twice_for_the_same_port(self):
         self.write_script("auto2", "def on_line(dev, line):\n    pass\n")
         self.control("script_autorun", name="auto2", enabled=True, match={"port": self.device.port})

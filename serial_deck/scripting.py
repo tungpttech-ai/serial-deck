@@ -298,6 +298,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     manager.ensure_started()
     manager.claim_port(args.port, args.baud)
     transport = open_uart_transport(manager.endpoint, args.baud, 0.2)
+    run_id = os.environ.get("SERIAL_DECK_RUN_ID")
+    if run_id:  # started by the hub: let it tell this socket from a dashboard's
+        try:
+            manager.request_control("runner_attached", id=run_id)
+        except Exception:
+            pass  # an older hub: it counts runners the old way
     device = Device(transport, args.port, args.baud, log=lambda text: print(text, flush=True))
     signal.signal(signal.SIGTERM, lambda *_: device.close())
     if hasattr(signal, "SIGINT"):

@@ -35,7 +35,7 @@ SSH_ACTIONS = ("ssh_devices", "ssh_fingerprint", "ssh_pair", "ssh_forget", "ssh_
                "ssh_restart", "ssh_screen", "ssh_profiles")
 # User scripts run as supervised processes owned by this daemon (script_supervisor).
 SCRIPT_ACTIONS = ("script_list", "script_run", "script_stop", "script_status", "script_logs",
-                  "script_autorun")
+                  "script_autorun", "runner_attached")
 # A script run started by the hub itself may be stopped once nobody else uses its
 # port; give its runner this long to attach before judging.
 AUTORUN_GRACE_S = 10.0
@@ -412,6 +412,9 @@ class MultiPortHub(UartHub):
                 baud = request.get("baud", 115200)
                 run = self.scripts.start(str(request.get("name", "")), port, baud)
                 return {"ok": True, "run": run.summary()}
+            if action == "runner_attached":
+                self.scripts.mark_attached(str(request.get("id", "")))
+                return {"ok": True}
             if action == "script_stop":
                 return {"ok": True, "run": self.scripts.stop(str(request.get("id", ""))).summary()}
             if action == "script_logs":
@@ -518,11 +521,13 @@ class MultiPortHub(UartHub):
         A runner is a data client like a dashboard, so counting it would keep every
         autorun port open (and refuse `hub --shutdown`) forever. Scripts a user
         started by hand count as clients: they hold the port until they finish.
+        Only runners that reported `runner_attached` are subtracted: before that
+        their socket is not in `clients` yet, and a dashboard must not be mistaken
+        for the runner.
         """
         with channel.clients_lock:
             total = len(channel.clients)
-        autoruns = sum(1 for run in self.scripts.running_on(channel.port) if run.autorun)
-        return max(0, total - autoruns)
+        return max(0, total - self.scripts.attached_autoruns_on(channel.port))
 
     def stop_idle_autoruns(self) -> None:
         """Stop autorun scripts on ports nobody else is using (called by the run loop)."""

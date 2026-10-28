@@ -95,6 +95,12 @@
   - Helper is now `serial-deck-ssh 2`; hosts paired with version 1 keep
     streaming and report `helper_outdated` for restart until paired again.
 
+- Fixed: a dashboard connecting before an autorun script's runner had attached
+  was counted as that runner, so `hub --shutdown` was allowed while the
+  dashboard was open and the script could be stopped under it. The runner now
+  tells the hub when its data socket is open (`runner_attached`); only attached
+  runners are left out of the client count. An older runner that never reports
+  is counted as a client (the port stays open, never closed early).
 - Auto-connect, always off until you turn it on (opening a UART can reset a
   board):
   - **Auto-reconnect** (checkbox next to Connect): a device that is unplugged,

@@ -51,6 +51,7 @@ class ScriptRun:
         self.port = port
         self.baud = baud
         self.autorun = autorun
+        self.attached = False  # its runner reported its data socket open (runner_attached)
         self.started = time.time()
         self.finished: float | None = None
         self.exit_code: int | None = None
@@ -157,7 +158,8 @@ class ScriptSupervisor:
             run.process = subprocess.Popen(
                 command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
-                env=runtime.self_command_env() if runtime.frozen() else None, **detach)
+                env={**(runtime.self_command_env() if runtime.frozen() else os.environ),
+                     "SERIAL_DECK_RUN_ID": run.id}, **detach)
             self.runs[run.id] = run
             self._trim()
         threading.Thread(target=self._pump, args=(run,), name=f"script-{run.id}", daemon=True).start()
@@ -226,6 +228,16 @@ class ScriptSupervisor:
     def running_on(self, port: str) -> list[ScriptRun]:
         with self.lock:
             return [r for r in self.runs.values() if r.port == port and r.finished is None]
+
+    def mark_attached(self, run_id: str) -> None:
+        """A runner this supervisor started reports its data socket is open."""
+        run = self.get(run_id)
+        if not run.autorun or run.finished is not None:
+            raise KeyError(f"no running autorun {run_id}")
+        run.attached = True
+
+    def attached_autoruns_on(self, port: str) -> int:
+        return sum(1 for r in self.running_on(port) if r.autorun and r.attached)
 
     def stop_autoruns_on(self, port: str) -> None:
         for run in self.running_on(port):
