@@ -15,13 +15,20 @@ from typing import Any, Callable
 
 try:
     from .deckconfig import JsonFile
+    from .uart_client import usb_matches
 except ImportError:
     from deckconfig import JsonFile
+    from uart_client import usb_matches
 
 DEFAULTS: dict[str, Any] = {"restore_on_start": False, "last_ports": [], "rules": []}
 VID_PID_RE = re.compile(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$")
+INTERFACE_RE = re.compile(r"^[0-9a-f]{2}$")
 MODES = ("control", "linux")
 MAX_RULES = 32
+# Opening a UART can reset the board: give up on a port after this many failed
+# attempts per plug-in, and treat this many empty listings in a row as "unplugged".
+MAX_OPEN_ATTEMPTS = 3
+EMPTY_POLLS_BEFORE_FORGET = 2
 
 
 class SettingsError(ValueError):
@@ -33,14 +40,18 @@ def clean_rule(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise SettingsError("a rule must be an object")
     # Check the raw text: strip() would hide a trailing newline from the check below.
-    raw_text = f'{raw.get("usb_vid_pid", "")}{raw.get("usb_serial", "")}{raw.get("port", "")}{raw.get("label", "")}'
+    raw_text = (f'{raw.get("usb_vid_pid", "")}{raw.get("usb_serial", "")}{raw.get("usb_interface", "")}'
+                f'{raw.get("port", "")}{raw.get("label", "")}')
     if any(ord(c) < 32 or ord(c) == 127 for c in raw_text):
         raise SettingsError("values must not contain control characters")
     vid_pid = str(raw.get("usb_vid_pid", "")).strip().lower()
     serial = str(raw.get("usb_serial", "")).strip()
+    interface = str(raw.get("usb_interface", "")).strip().lower()
     port = str(raw.get("port", "")).strip()
     if vid_pid and not VID_PID_RE.match(vid_pid):
         raise SettingsError("usb_vid_pid must look like 303a:1001")
+    if interface and not (vid_pid and INTERFACE_RE.match(interface)):
+        raise SettingsError("usb_interface must be two hex digits and needs a vid:pid")
     if not vid_pid and not port:
         raise SettingsError("a rule needs a USB vid:pid or a port")
     if len(serial) > 64 or len(port) > 256:
@@ -53,7 +64,7 @@ def clean_rule(raw: Any) -> dict[str, Any]:
         raise SettingsError(f"mode must be one of {MODES}")
     label = str(raw.get("label", "")).strip()[:48]
     return {"label": label or vid_pid or port, "usb_vid_pid": vid_pid, "usb_serial": serial,
-            "port": "" if vid_pid else port, "baud": baud, "mode": mode,
+            "usb_interface": interface, "port": "" if vid_pid else port, "baud": baud, "mode": mode,
             "enabled": bool(raw.get("enabled", True))}
 
 
@@ -94,9 +105,7 @@ def rule_matches(rule: dict[str, Any], port: str, identity: dict[str, str]) -> b
     if not rule.get("enabled", True):
         return False
     if rule.get("usb_vid_pid"):
-        if identity.get("usb_vid_pid", "").lower() != rule["usb_vid_pid"]:
-            return False
-        return not rule.get("usb_serial") or identity.get("usb_serial") == rule["usb_serial"]
+        return usb_matches(rule, identity)
     return bool(rule.get("port")) and port == rule["port"]
 
 
@@ -121,6 +130,8 @@ class RuleWatcher:
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
         self.handled: set[str] = set()  # ports acted on since they were plugged in
+        self.failures: dict[str, int] = {}  # failed opens per port since it was plugged in
+        self.empty_polls = 0
 
     def start(self) -> None:
         self.thread = threading.Thread(target=self._run, name="serial-deck-rules", daemon=True)
@@ -139,21 +150,44 @@ class RuleWatcher:
     def poll(self) -> list[str]:
         rules = [r for r in self.settings.get()["rules"] if r.get("enabled", True)]
         present = self.list_ports()
+        if not present and (self.handled or self.failures):
+            # An empty listing is more likely a failed enumeration than every device
+            # unplugged at once: keep what was handled so a Disconnect is not undone.
+            self.empty_polls += 1
+            if self.empty_polls < EMPTY_POLLS_BEFORE_FORGET:
+                return []
+        else:
+            self.empty_polls = 0
         self.handled &= set(present)  # unplugged: eligible again on the next plug
         if not rules:
             return []
         connected = []
         for port in present:
-            if port in self.handled or self.is_open(port):
+            if port in self.handled:
+                continue
+            if self.is_open(port):
+                # Opened by the user, restore or another rule: a later Disconnect is the
+                # user's choice, so this plug-in counts as acted on.
+                self.handled.add(port)
                 continue
             identity = self.identity_of(port)
             rule = next((r for r in rules if rule_matches(r, port, identity)), None)
             if rule is None:
                 continue
-            self.handled.add(port)
             try:
                 self.connect(port, rule)
-                connected.append(port)
             except Exception:
-                pass
+                # A failed open (busy, permissions) is retried on a later poll, but not
+                # on every one: each attempt may pulse DTR/RTS and reset the board.
+                failures = self.failures.get(port, 0) + 1
+                self.failures[port] = failures
+                if failures >= MAX_OPEN_ATTEMPTS:
+                    self.handled.add(port)
+                continue
+            self.failures.pop(port, None)
+            self.handled.add(port)
+            connected.append(port)
+        for port in list(self.failures):
+            if port not in present:
+                del self.failures[port]
         return connected

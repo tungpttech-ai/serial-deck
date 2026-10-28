@@ -59,6 +59,8 @@ when the client starts a new session.
 |---|---|---|---|
 | `--allow observe\|interact\|hardware` | `SERIAL_DECK_MCP_ALLOW` | `observe` | Highest action level the agent may use |
 | `--socket PATH` | `SERIAL_DECK_HUB_SOCKET` | per-user default hub | Shared hub endpoint |
+| `--profile NAME` | | | Device profile (see the README): supplies the tool prefix unless `--tool-prefix` is given |
+| `--tool-prefix NAME` | `SERIAL_DECK_MCP_TOOL_PREFIX` | `serial` | Renames every tool (`serial_connect` → `NAME_connect`), hints and instructions included; keeps the tool names of an older registration |
 | `--log-level` | | `WARNING` | Server log (stderr only, never stdout) |
 | `--no-activity` | | | Do not publish activity to the dashboard |
 
@@ -70,9 +72,9 @@ outside the policy are **not registered**, so the agent never sees them.
 
 | Policy | Adds tools | Effect |
 |---|---|---|
-| `observe` | `serial_status`, `serial_list_ports`, `serial_connect`, `serial_disconnect`, `serial_hello`, `serial_query`, `serial_logs`, `serial_wait_for`, `serial_symbolize`, `serial_flash_preview`, `serial_flash_status`, `serial_script_list`, `serial_script_status` | Read only (a flash preview writes nothing to the board) |
+| `observe` | `serial_status`, `serial_list_ports`, `serial_connect`, `serial_disconnect`, `serial_hello`, `serial_query`, `serial_logs`, `serial_wait_for`, `serial_symbolize`, `serial_flash_preview`, `serial_flash_status`, `serial_script_list`, `serial_script_status`, `serial_screenshot` | Read only (a flash preview writes nothing to the board) |
 | `interact` | `serial_button`, `serial_show_info` | Changes firmware UI state; may retime a shared port's baud |
-| `hardware` | `serial_reset`, `serial_bootloader`, `serial_flash_start` | Reset, ROM bootloader, firmware writes |
+| `hardware` | `serial_reset`, `serial_bootloader`, `serial_flash_start`, `serial_restart` | Reset, ROM bootloader, firmware writes, remote service restart |
 
 This is a **guard against agent mistakes**, not a security boundary between
 processes of the same user. Your MCP client's permission prompt still approves
@@ -99,6 +101,8 @@ connected, `port` may be omitted.
 | `serial_symbolize` | `text`, `elf` (absolute path) | Resolves `0x…` addresses with the ESP-IDF addr2line |
 | `serial_button` | `button=HOME\|LEFT\|RIGHT\|ENTER\|ONOFF`, `action=press\|release\|long_press` | Command lifecycle |
 | `serial_show_info` | – | Opens the firmware's info screen |
+| `serial_screenshot` | `after_revision?` | SSH device paired with a `screen_path`: its current screen as a JPEG image plus `revision`; no image when unchanged |
+| `serial_restart` | `arg` (one of the device's `restart_args`) | SSH device: runs the restart command configured on the host at pairing |
 | `serial_reset` | `wait_for?[]`, `timeout_s` | RTS/EN reset, optionally waits for a boot marker |
 | `serial_bootloader` | – | Puts an ESP chip into ROM download mode |
 | `serial_flash_preview` | `build_dir` (absolute), `flash_baud=3000000` | Validates the build, snapshots it, returns images, hashes, the esptool command and a `token` |

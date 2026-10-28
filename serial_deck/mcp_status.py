@@ -30,9 +30,9 @@ POLICIES = ("observe", "interact", "hardware")
 TOOLS = {
     "observe": ["serial_status", "serial_list_ports", "serial_connect", "serial_disconnect", "serial_hello",
                 "serial_query", "serial_logs", "serial_wait_for", "serial_symbolize", "serial_flash_preview",
-                "serial_flash_status"],
+                "serial_flash_status", "serial_screenshot"],
     "interact": ["serial_button", "serial_show_info"],
-    "hardware": ["serial_reset", "serial_bootloader", "serial_flash_start"],
+    "hardware": ["serial_reset", "serial_bootloader", "serial_flash_start", "serial_restart"],
 }
 
 

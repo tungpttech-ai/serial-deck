@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 try:
     from . import mcp_status, runtime, ssh_socket
+    from . import profiles
     from .autoconnect import RuleWatcher, Settings, SettingsError
     from .deckconfig import JsonFile
     from .hub_client import (
@@ -59,6 +60,7 @@ except ImportError:
     import mcp_status
     import runtime
     import ssh_socket
+    import profiles
     from autoconnect import RuleWatcher, Settings, SettingsError
     from deckconfig import JsonFile
     from hub_client import (
@@ -270,9 +272,9 @@ class DeckWebBridge:
 
     def __init__(self, default_port: str = "", default_baud: int = 2000000,
                  elf: str = "", hub_manager: HubProcessManager | None = None,
-                 hub_registry: HubRegistry | None = None) -> None:
+                 hub_registry: HubRegistry | None = None, default_mode: str = "linux") -> None:
         self.lock = threading.Lock()
-        self.connect_lock = threading.Lock()
+        self.connect_lock = threading.RLock()
         self.transport: Any = None
         self.reader: UartReader | None = None
         self.reader_thread: threading.Thread | None = None
@@ -283,8 +285,9 @@ class DeckWebBridge:
         # "control": COBS control frames + ESP log lines (hello, buttons, query).
         # "linux": generic console for Linux boards/other apps; no control
         # frames, raw bytes are streamed to the interactive terminal view.
-        # Linux/raw is the default: nothing is sent to a device unasked.
-        self.console_mode = "linux"
+        # Linux/raw is the default: nothing is sent to a device unasked
+        # (`--mode control` for firmware that speaks the control protocol).
+        self.console_mode = default_mode if default_mode in CONSOLE_MODES else "linux"
         self.raw_history = bytearray()
         self.dtr_state: bool | None = None
         self.rts_state: bool | None = None
@@ -423,7 +426,7 @@ class DeckWebBridge:
             raise ValueError(f"unknown console mode: {mode}")
         if self.hub_registry is not None:
             if self.connected or self._owns_manager:
-                self.disconnect()
+                self._drop_connection()  # connect_lock is already held by the caller
             if passphrase:
                 manager = self.hub_registry.acquire(port, baud, on_baud_conflict, passphrase)
             else:
@@ -491,7 +494,8 @@ class DeckWebBridge:
         identity = usb_identity(port) if not is_non_serial_port(port) else {}
         self._remembered = {"port": port, "baud": baud, "mode": self.console_mode,
                             "usb_vid_pid": identity.get("usb_vid_pid", ""),
-                            "usb_serial": identity.get("usb_serial", "")}
+                            "usb_serial": identity.get("usb_serial", ""),
+                            "usb_interface": identity.get("usb_interface", "")}
 
     def set_auto_reconnect(self, enabled: bool) -> dict[str, Any]:
         self.auto_reconnect = bool(enabled)
@@ -513,7 +517,11 @@ class DeckWebBridge:
     def disconnect(self) -> dict[str, Any]:
         self.generation += 1  # the user (or close) wants it off: no reconnect
         self.reconnecting = False
-        status = self._drop_connection()
+        # A connect already past its generation check (a retry opening the hub) holds
+        # connect_lock: wait for it, then drop what it opened, so a Disconnect pressed
+        # at that moment is never undone by the connection that finishes afterwards.
+        with self.connect_lock:
+            status = self._drop_connection()
         if not self._closed:  # closing the app is not "the user closed this port"
             self._session_changed()
         return status
@@ -624,7 +632,8 @@ class DeckWebBridge:
             return None
         vid_pid = remembered.get("usb_vid_pid") or ""
         if vid_pid:
-            return find_port_by_usb(vid_pid, remembered.get("usb_serial") or "", present)
+            return find_port_by_usb(vid_pid, remembered.get("usb_serial") or "", present,
+                                    remembered.get("usb_interface") or "")
         return port if port in present else None
 
     def _reader_loop(self) -> None:
@@ -929,9 +938,10 @@ def transport_label(port: str, console_mode: str) -> str:
 SSH_WEB_ACTIONS = {
     "devices": "ssh_devices", "fingerprint": "ssh_fingerprint", "pair": "ssh_pair",
     "forget": "ssh_forget", "retry": "ssh_retry", "unlock": "ssh_unlock",
+    "restart": "ssh_restart", "screen": "ssh_screen", "profiles": "ssh_profiles",
 }
 # Actions that change a host or use a secret: page token required.
-SSH_BOARD_ACTIONS = ("pair", "forget", "unlock")
+SSH_BOARD_ACTIONS = ("pair", "forget", "unlock", "restart")
 # Python scripts: the page may list, run, stop, read output and set autorun. It can
 # not create or change one (they are files the user edits). Run/stop/autorun make a
 # device act, so they need the page token.
@@ -940,7 +950,10 @@ SCRIPT_WEB_ACTIONS = {"list": "script_list", "status": "script_status", "logs": 
 SCRIPT_TOKEN_ACTIONS = ("run", "stop", "autorun")
 SCRIPT_FIELDS = ("name", "port", "baud", "id", "after", "limit", "enabled", "match")
 SSH_PAIR_FIELDS = ("name", "host", "ssh_port", "user", "auth", "password", "passphrase", "key_passphrase",
-                   "key_path", "fingerprint", "replace_host_key", "remote_socket")
+                   "key_path", "fingerprint", "replace_host_key", "remote_socket", "control_socket",
+                   "screen_path", "restart_args", "restart_cmd", "arg", "after_revision",
+                   "follow_socket_suffix", "screen_revision_header", "screen_size_header",
+                   "restart_conf_hint")
 
 
 class ConnectionManager:
@@ -954,15 +967,17 @@ class ConnectionManager:
     DEFAULT_ID = "default"
 
     def __init__(self, default_bridge: DeckWebBridge, hub_registry: HubRegistry,
-                 baud: int, elf: str) -> None:
+                 baud: int, elf: str, mode: str = "linux") -> None:
         self.hub_registry = hub_registry
         self.baud = baud
+        self.mode = mode
         self.elf = elf
         self.lock = threading.Lock()
         self._bridges: dict[str, DeckWebBridge] = {self.DEFAULT_ID: default_bridge}
         self._order: list[str] = [self.DEFAULT_ID]
         self.lifecycle_hubs: list[HubProcessManager] = []
         self.settings = Settings()
+        self.pending: list[dict[str, Any]] = []  # saved ports not restored yet
         self.watcher: RuleWatcher | None = None
         default_bridge.on_session_change = self.remember_session
 
@@ -975,7 +990,8 @@ class ConnectionManager:
 
     def create(self) -> tuple[str, DeckWebBridge]:
         conn_id = uuid.uuid4().hex[:12]
-        bridge = DeckWebBridge(default_baud=self.baud, elf=self.elf, hub_registry=self.hub_registry)
+        bridge = DeckWebBridge(default_baud=self.baud, elf=self.elf, hub_registry=self.hub_registry,
+                               default_mode=self.mode)
         bridge.on_session_change = self.remember_session
         with self.lock:
             self._bridges[conn_id] = bridge
@@ -1003,17 +1019,37 @@ class ConnectionManager:
         """Keep the ports that are open now, for "restore on start"."""
         with self.lock:
             bridges = [self._bridges[i] for i in self._order if i in self._bridges]
+        self._save_session(bridges=bridges)
+
+    SESSION_KEYS = ("port", "baud", "mode", "usb_vid_pid", "usb_serial", "usb_interface")
+
+    def _save_session(self, bridges: list[DeckWebBridge] | None = None) -> None:
+        if bridges is None:
+            with self.lock:
+                bridges = [self._bridges[i] for i in self._order if i in self._bridges]
         ports = []
         for bridge in bridges:
             if bridge.connected and bridge._remembered:
-                item = {key: bridge._remembered.get(key, "") for key in
-                        ("port", "baud", "mode", "usb_vid_pid", "usb_serial")}
+                item = {key: bridge._remembered.get(key, "") for key in self.SESSION_KEYS}
                 if item not in ports:
                     ports.append(item)
+        for old in self.pending:
+            item = {key: old.get(key, "") for key in self.SESSION_KEYS}
+            if not any(self._same_saved_device(item, new) for new in ports):
+                ports.append(item)
         try:
             self.settings.update(last_ports=ports)
         except Exception:
             pass
+
+    @staticmethod
+    def _same_saved_device(old: dict[str, Any], new: dict[str, Any]) -> bool:
+        """The saved entry and an open one are one device (its tty number may have changed)."""
+        if old.get("usb_vid_pid"):
+            # An entry saved before interfaces existed has none: it stands for the board.
+            keys = ("usb_vid_pid", "usb_serial") + (("usb_interface",) if old.get("usb_interface") else ())
+            return all(old.get(key, "") == new.get(key, "") for key in keys)
+        return old.get("port") == new.get("port")
 
     def restore_last_session(self) -> list[str]:
         """Reconnect the ports that were open last time (only if the user opted in)."""
@@ -1021,6 +1057,10 @@ class ConnectionManager:
         if not settings["restore_on_start"]:
             return []
         restored = []
+        # Entries not restored yet stay in the saved list (a board still unplugged, a busy
+        # port) until they are restored; one that was restored leaves `pending`, so the
+        # user closing it afterwards forgets it as usual.
+        self.pending = [dict(item) for item in settings["last_ports"]]
         for item in settings["last_ports"]:
             try:
                 port = self._current_port(item)
@@ -1029,8 +1069,10 @@ class ConnectionManager:
                 conn_id, bridge = self._free_bridge()
                 bridge.connect(port, int(item.get("baud") or self.baud), item.get("mode") or "linux")
                 restored.append(port)
+                self.pending = [p for p in self.pending if p != item]
             except Exception:
                 continue  # a port that is gone or busy must not block the others
+        self._save_session()
         return restored
 
     def _current_port(self, item: dict[str, Any]) -> str | None:
@@ -1041,7 +1083,8 @@ class ConnectionManager:
             return port
         present = self.default_bridge_ports()
         if item.get("usb_vid_pid"):
-            return find_port_by_usb(item["usb_vid_pid"], item.get("usb_serial") or "", present)
+            return find_port_by_usb(item["usb_vid_pid"], item.get("usb_serial") or "", present,
+                                    item.get("usb_interface") or "")
         return port if port in present else None
 
     def default_bridge_ports(self) -> list[str]:
@@ -2011,18 +2054,10 @@ HTML_PAGE = """<!DOCTYPE html>
   </nav>
 
   <!-- TOP HEADER -->
-  <header id="appHeader" class="bg-brand-surface border-b border-brand-border px-5 py-3 flex items-center justify-between shrink-0 shadow-md">
-    <div class="flex items-center space-x-3">
-      <div class="w-9 h-9 rounded-lg bg-brand-accent flex items-center justify-center text-[#00363d] font-black text-xl shadow-lg shadow-brand-accent/20">
-        <i class="fa-solid fa-microchip"></i>
-      </div>
-      <div>
-        <div class="flex items-center space-x-2">
-          <h1 class="text-lg font-bold tracking-wide text-brand-text">SERIAL DECK</h1>
-          <span id="transportBadge" class="text-xs bg-brand-surfaceAlt text-brand-accent px-2 py-0.5 rounded border border-brand-border mono font-semibold">UART</span>
-        </div>
-        <p class="text-xs text-brand-muted">Shared serial console, device control and ESP32 flashing</p>
-      </div>
+  <header id="appHeader" class="bg-brand-surface border-b border-brand-border px-4 py-1.5 flex items-center justify-between shrink-0 shadow-md">
+    <div class="flex items-center space-x-2">
+      <h1 class="text-sm font-bold tracking-wide text-brand-text" title="Shared serial console, device control and ESP32 flashing">SERIAL DECK</h1>
+      <span id="transportBadge" class="text-[10px] bg-brand-surfaceAlt text-brand-accent px-1.5 py-0.5 rounded border border-brand-border mono font-semibold">UART</span>
     </div>
 
     <!-- Connection & Modem Controls -->
@@ -2214,6 +2249,20 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="flex justify-between"><span class="text-brand-muted">Host</span><span id="sshHost">--</span></div>
           <div class="flex justify-between"><span class="text-brand-muted">Socket</span><span id="sshSocket" class="truncate ml-2">--</span></div>
           <div class="flex justify-between"><span class="text-brand-muted">Link</span><span id="sshLink">--</span></div>
+        </div>
+        <div id="sshScreen" class="hidden mb-3">
+          <div class="flex items-center justify-between text-[10px] text-brand-muted mb-1">
+            <span id="sshScreenLive">stopped</span><span class="mono">rev <span id="sshScreenRev">--</span></span>
+          </div>
+          <img id="sshScreenImg" alt="Remote screen" class="w-full rounded border border-brand-border bg-black min-h-[4rem] object-contain">
+          <div class="flex space-x-2 mt-1">
+            <button id="sshScreenToggle" onclick="sshScreenToggle()" class="flex-1 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px]">Pause</button>
+            <button onclick="sshScreenSave()" class="flex-1 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px]"><i class="fa-solid fa-download mr-1"></i>Save</button>
+          </div>
+        </div>
+        <div id="sshRestart" class="hidden mb-3">
+          <div class="text-[10px] text-brand-muted mb-1">Restart remote service</div>
+          <div id="sshRestartButtons" class="flex flex-wrap gap-1"></div>
         </div>
         <button onclick="sshForgetAsk()" class="w-full py-1.5 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-xs font-semibold transition"><i class="fa-solid fa-link-slash mr-1"></i>Forget device…</button>
         <div id="sshConfirm" class="hidden mt-2 p-2 border border-brand-danger/50 bg-brand-danger/10 rounded text-xs">
@@ -2559,6 +2608,8 @@ HTML_PAGE = """<!DOCTYPE html>
         <span id="pairStepLabel" class="mono text-brand-muted">1/3</span>
       </div>
       <div id="pairStep1" class="space-y-2">
+        <label id="pairProfileRow" class="hidden block"><span class="text-brand-muted font-semibold">Profile</span>
+          <select id="pairProfile" onchange="pairApplyProfile(this.value)" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></select></label>
         <label class="block"><span class="text-brand-muted font-semibold">Name</span>
           <input id="pairName" maxlength="32" placeholder="lab-pi" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
         <div class="flex space-x-2">
@@ -2590,6 +2641,14 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="mt-2 space-y-2">
             <label class="block"><span class="text-brand-muted">Passphrase for the device key (optional; asked on every connect, never stored)</span>
               <input id="pairKeyPassphrase" type="password" autocomplete="new-password" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono"></label>
+            <label class="block"><span class="text-brand-muted">Control socket (optional HTTP service on the host)</span>
+              <input id="pairControl" placeholder="/run/daemon.sock" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono"></label>
+            <label class="block"><span class="text-brand-muted">Screen path (JPEG over the control socket)</span>
+              <input id="pairScreen" placeholder="/api/screen?format=jpeg" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono"></label>
+            <label class="block"><span class="text-brand-muted">Restart command (kept on the host only; gets $RESTART_ARG)</span>
+              <input id="pairRestartCmd" placeholder="systemctl restart my-daemon" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono"></label>
+            <label class="block"><span class="text-brand-muted">Restart arguments (space separated)</span>
+              <input id="pairRestartArgs" placeholder="default" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono"></label>
           </div></details>
       </div>
       <div id="pairStep2" class="hidden space-y-2">
@@ -3840,8 +3899,83 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('sshHost').innerText = dev ? `${dev.user}@${dev.host}` : '--';
         document.getElementById('sshSocket').innerText = dev ? dev.remote_socket : '--';
         document.getElementById('sshLink').innerText = st.link ? linkStateText(st.link.state) : '--';
+        const args = dev && dev.restart_args || [];
+        document.getElementById('sshRestart').classList.toggle('hidden', !args.length);
+        document.getElementById('sshRestartButtons').replaceChildren(...args.map(arg => {
+          const b = document.createElement('button');
+          b.className = 'px-2 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px] mono';
+          b.innerText = arg;
+          b.onclick = () => sshRestart(dev.name, arg);
+          return b;
+        }));
       }
+      sshScreenSync();
     }
+
+    async function sshRestart(name, arg, passphrase) {
+      if (!passphrase && !confirm(`Restart the service on ${name} with "${arg}"? Its stream drops and reconnects.`)) return;
+      const body = { name, arg };
+      if (passphrase) body.passphrase = passphrase;
+      const res = await sshPost('restart', body, true);
+      if (res.ok) appendLocalLog('info', `[ssh] ${name}: restart ${arg}`);
+      else if (res.code === 'passphrase_required') { passphraseOpen(name, 'restart'); passphraseTarget.arg = arg; }
+      else appendLocalLog('warning', `[ssh] restart: ${res.error || 'failed'}`);
+    }
+
+    // Screen preview: poll by revision, <= ~2 fps, only while visible and connected.
+    const SSH_SCREEN_INTERVAL_MS = 500;
+    let sshScreenTimer = null, sshScreenRevision = null, sshScreenPaused = false, sshScreenBusy = false;
+
+    function sshScreenDevice() {
+      const st = ensureConn(connId).status;
+      const dev = currentSshDevice();
+      return dev && dev.screen_path && st.connected ? dev : null;
+    }
+
+    function sshScreenSync() {
+      const dev = sshScreenDevice();
+      document.getElementById('sshScreen').classList.toggle('hidden', !(currentSshDevice() || {}).screen_path);
+      const live = !!dev && !sshScreenPaused && !document.hidden;
+      document.getElementById('sshScreenLive').innerText = live ? 'live · 2 fps' : (sshScreenPaused ? 'paused' : 'stopped');
+      document.getElementById('sshScreenToggle').innerText = sshScreenPaused ? 'Resume' : 'Pause';
+      if (live && !sshScreenTimer) sshScreenTimer = setTimeout(sshScreenPoll, 0);
+      if (!live && sshScreenTimer) { clearTimeout(sshScreenTimer); sshScreenTimer = null; }
+    }
+
+    async function sshScreenPoll() {
+      sshScreenTimer = null;
+      const dev = sshScreenDevice();
+      if (!dev || sshScreenPaused || document.hidden || sshScreenBusy) { sshScreenSync(); return; }
+      sshScreenBusy = true;
+      const started = Date.now();
+      try {
+        const frame = await sshPost('screen', { name: dev.name, after_revision: sshScreenRevision }, true);
+        if (frame.ok && frame.changed) {
+          document.getElementById('sshScreenImg').src = `data:${frame.mime};base64,${frame.data}`;
+          sshScreenRevision = frame.revision;
+          document.getElementById('sshScreenRev').innerText = String(frame.revision);
+        }
+      } catch (err) {
+        console.error('screen frame', err);
+      } finally {
+        sshScreenBusy = false;
+      }
+      if (sshScreenDevice() && !sshScreenPaused && !document.hidden)
+        sshScreenTimer = setTimeout(sshScreenPoll, Math.max(0, SSH_SCREEN_INTERVAL_MS - (Date.now() - started)));
+    }
+
+    function sshScreenToggle() { sshScreenPaused = !sshScreenPaused; sshScreenSync(); }
+
+    function sshScreenSave() {
+      const src = document.getElementById('sshScreenImg').src;
+      if (!src.startsWith('data:')) return;
+      const link = document.createElement('a');
+      link.href = src;
+      link.download = `screen-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.jpg`;
+      link.click();
+    }
+
+    document.addEventListener('visibilitychange', sshScreenSync);
 
     function updateLinkFix(st) {
       const btn = document.getElementById('linkFixBtn');
@@ -3900,6 +4034,34 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
+    // Profiles (JSON files in the profile directory) pre-fill this form; the fields the
+    // form has no input for travel in pairExtra.
+    let pairExtra = {}, pairProfiles = [];
+
+    async function pairLoadProfiles() {
+      const row = document.getElementById('pairProfileRow');
+      try {
+        const data = await sshPost('profiles', {}, true);
+        pairProfiles = data.ok ? (data.profiles || []) : [];
+      } catch (err) { pairProfiles = []; }
+      const select = document.getElementById('pairProfile');
+      select.replaceChildren(new Option('(none)', ''), ...pairProfiles.map(p => new Option(p.label, p.name)));
+      row.classList.toggle('hidden', !pairProfiles.length);
+    }
+
+    function pairApplyProfile(name) {
+      const profile = pairProfiles.find(p => p.name === name);
+      pairExtra = {};
+      if (!profile) return;
+      const set = (id, value) => { if (value !== undefined) document.getElementById(id).value = value; };
+      set('pairSocket', profile.remote_socket); set('pairControl', profile.control_socket || '');
+      set('pairScreen', profile.screen_path || '');
+      set('pairRestartArgs', (profile.restart_args || []).join(' '));
+      if (profile.user) set('pairUser', profile.user);
+      for (const key of ['follow_socket_suffix', 'screen_revision_header', 'screen_size_header', 'restart_conf_hint'])
+        if (profile[key]) pairExtra[key] = profile[key];
+    }
+
     function pairOpen(device, replaceHostKey) {
       pairState = { step: 1, auth: 'password', fingerprint: '', replace: !!replaceHostKey, busy: false };
       const set = (id, value) => { document.getElementById(id).value = value; };
@@ -3908,6 +4070,12 @@ HTML_PAGE = """<!DOCTYPE html>
       set('pairPort', device ? String(device.port || 22) : '22');
       set('pairUser', device ? device.user : 'root');
       set('pairSocket', device ? device.remote_socket : '');
+      set('pairControl', device && device.control_socket || '');
+      set('pairScreen', device && device.screen_path || '');
+      set('pairRestartCmd', '');
+      set('pairRestartArgs', device && device.restart_args ? device.restart_args.join(' ') : '');
+      pairExtra = {};
+      pairLoadProfiles();
       set('pairPassword', '');
       set('pairPassphrase', '');
       set('pairKeyPath', '');
@@ -3940,6 +4108,9 @@ HTML_PAGE = """<!DOCTYPE html>
       return {
         name: val('pairName'), host: val('pairHost'), ssh_port: parseInt(val('pairPort') || '22', 10),
         user: val('pairUser') || 'root', remote_socket: val('pairSocket'),
+        control_socket: val('pairControl'), screen_path: val('pairScreen'),
+        restart_cmd: val('pairRestartCmd'), restart_args: val('pairRestartArgs').split(' ').filter(Boolean),
+        ...pairExtra,
       };
     }
 
@@ -4057,6 +4228,10 @@ HTML_PAGE = """<!DOCTYPE html>
         sshForgetRun(passphraseTarget.name, false, value);
         return;
       }
+      if (passphraseTarget.mode === 'restart') {
+        sshRestart(passphraseTarget.name, passphraseTarget.arg, value);
+        return;
+      }
       if (passphraseTarget.mode === 'unlock') {
         const res = await sshPost('unlock', { name: passphraseTarget.name, passphrase: value });
         if (!res.ok && res.code === 'passphrase_required') passphraseOpen(passphraseTarget.name, 'unlock');
@@ -4136,7 +4311,7 @@ HTML_PAGE = """<!DOCTYPE html>
         name.textContent = rule.label;
         const id = document.createElement('span');
         id.className = 'text-brand-muted mono';
-        id.textContent = rule.usb_vid_pid ? `${rule.usb_vid_pid}${rule.usb_serial ? ' · ' + rule.usb_serial : ''}` : rule.port;
+        id.textContent = rule.usb_vid_pid ? `${rule.usb_vid_pid}${rule.usb_serial ? ' · ' + rule.usb_serial : ''}${rule.usb_interface ? ' · if ' + rule.usb_interface : ''}` : rule.port;
         const baud = document.createElement('input');
         baud.type = 'number'; baud.value = rule.baud; baud.min = 9600; baud.max = 12000000;
         baud.className = 'w-24 bg-brand-surface border border-brand-border rounded px-1 py-0.5 mono';
@@ -4184,7 +4359,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       const rule = { label: (detail.description || port).slice(0, 48), baud: status.baud || 115200,
                      mode: status.console_mode || 'linux', enabled: true };
-      if (detail.usb_vid_pid) { rule.usb_vid_pid = detail.usb_vid_pid; rule.usb_serial = detail.usb_serial || ''; }
+      if (detail.usb_vid_pid) { rule.usb_vid_pid = detail.usb_vid_pid; rule.usb_serial = detail.usb_serial || ''; rule.usb_interface = detail.usb_interface || ''; }
       else rule.port = port;
       autoSettings.rules = [...(autoSettings.rules || []), rule];
       saveAutoSettings();
@@ -4309,7 +4484,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const port = status.connected ? status.port : selectedPort();
       const detail = portDetails.get(port) || {};
       let match = {};
-      if (detail.usb_vid_pid) { match = { usb_vid_pid: detail.usb_vid_pid, usb_serial: detail.usb_serial || '' }; }
+      if (detail.usb_vid_pid) { match = { usb_vid_pid: detail.usb_vid_pid, usb_serial: detail.usb_serial || '', usb_interface: detail.usb_interface || '' }; }
       else if (port) { match = { port }; }
       const res = await scriptPost('autorun', { name, enabled, match, baud: status.baud || 115200 });
       if (!res.ok) { scriptFail(res.error); checkbox.checked = !enabled; return; }
@@ -4648,7 +4823,7 @@ class WebBackend:
     def __init__(self, host: str = "127.0.0.1", port_web: int | None = None,
                  uart_port: str = "", baud: int = 2000000,
                  socket_path: str = DEFAULT_SOCKET, attach_only: bool = False,
-                 elf: str = "",
+                 elf: str = "", mode: str = "linux",
                  hub_manager_factory: Callable[..., HubProcessManager] = HubProcessManager,
                  hub_registry: HubRegistry | None = None) -> None:
         # Each backend gets its own handler class so two backends in one
@@ -4675,7 +4850,7 @@ class WebBackend:
 
         try:
             bridge = DeckWebBridge(default_port=uart_port, default_baud=baud, elf=elf,
-                                   hub_manager=self.hub_manager)
+                                   hub_manager=self.hub_manager, default_mode=mode)
         except Exception as exc:
             # The bridge subscribes to hub status; a hub that accepted the
             # readiness probe but then refused the subscription lands here.
@@ -4691,7 +4866,7 @@ class WebBackend:
         self.hub_registry = hub_registry if hub_registry is not None else HubRegistry(
             baud=baud, default_manager=self.hub_manager, reuse_live_baud=True)
         bridge.hub_registry = self.hub_registry
-        self.connections = ConnectionManager(bridge, self.hub_registry, baud, elf)
+        self.connections = ConnectionManager(bridge, self.hub_registry, baud, elf, mode)
         self.connections.lifecycle_hubs.append(self.hub_manager)
         self.handler.connections = self.connections
 
@@ -4763,15 +4938,30 @@ def main(argv: list[str] | None = None) -> int:
                              "or the next free port if it is taken)")
     parser.add_argument("--port", default="", help="initial physical UART selection for the hub")
     parser.add_argument("--baud", type=int, default=2000000, help="initial UART baudrate")
+    parser.add_argument("--mode", choices=CONSOLE_MODES, default=None,
+                        help="initial console mode (control: firmware with the control protocol); "
+                             "default linux, or the profile's default_mode")
+    parser.add_argument("--profile", default="",
+                        help="device profile name (see profiles.py): supplies the default baud and mode")
     parser.add_argument("--socket", default=DEFAULT_SOCKET, help="hub endpoint path")
     parser.add_argument("--attach-only", action="store_true", help="require an existing hub")
     parser.add_argument("--elf", default="", help="application ELF file for address symbolization")
     parser.add_argument("--open-browser", action="store_true", help="automatically open browser on startup")
     args = parser.parse_args(argv)
+    if args.profile:
+        try:
+            profile = profiles.load_all()[0][args.profile]
+        except KeyError:
+            parser.error(f"unknown profile {args.profile!r} (looked in {profiles.profile_dir()})")
+        if args.mode is None:
+            args.mode = profile.get("default_mode")
+        if profile.get("default_baud") and "--baud" not in (argv if argv is not None else sys.argv):
+            args.baud = profile["default_baud"]
+    args.mode = args.mode or "linux"
 
     try:
         backend = WebBackend(args.host, args.port_web, args.port, args.baud,
-                             args.socket, args.attach_only, args.elf)
+                             args.socket, args.attach_only, args.elf, args.mode)
     except HubStartupError as exc:
         print(f"Hub startup failed: {exc}", file=sys.stderr)
         return 2

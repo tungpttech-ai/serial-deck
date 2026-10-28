@@ -86,7 +86,8 @@ serial-deck-web --open-browser
 
 Pick a port and its baud, then press **Connect**. The default mode,
 **Linux / Raw**, never sends anything to the device by itself. Switch to
-**Control** only for firmware that implements the control protocol.
+**Control** only for firmware that implements the control protocol, or start
+with it: `serial-deck-web --mode control` (also `serial-deck-app`).
 
 Other front ends talk to the same hub:
 
@@ -144,6 +145,44 @@ is used once and never stored. If the host key changes, connecting is blocked
 until you pair again on purpose. **Forget device...** removes the key from the
 host and the profile from this machine. Needs the `ssh`, `ssh-keygen` and
 `ssh-keyscan` programs on your PATH (OpenSSH).
+
+Optional extras under *Advanced* when pairing:
+
+- **Control socket + screen path**: a second Unix socket on the host serving
+  HTTP, forwarded through the same tunnel. When the screen path returns a JPEG
+  (`X-Revision`, `X-Size`, `304` when `?after=<revision>` is current), the SSH
+  card shows a live preview and MCP gets `serial_screenshot`.
+- **Restart command + arguments**: the command is written once to the host's
+  `/etc/serial-deck/ssh.conf` (root) or `~/.config/serial-deck/ssh.conf` and is
+  never kept on this machine; it runs detached with `$RESTART_ARG` set to the
+  button you press. MCP gets `serial_restart` (hardware policy).
+
+For a host whose service may move between directories, a profile can also set
+`follow_socket_suffix` (the first path the helper lists with that suffix becomes
+the stream socket, the same path without it the control socket),
+`screen_revision_header` / `screen_size_header` (default `X-Revision` / `X-Size`)
+and `restart_conf_hint` (the text shown when the host has no restart command).
+
+Hosts paired before this helper version still stream; pair again to use
+restart (the helper reports `helper_outdated`).
+
+**Profiles.** Product-specific values (sockets, screen path, restart arguments,
+MCP tool prefix, default baud and mode) live in JSON files you keep, not in
+Serial Deck: `~/.config/serial-deck/profiles/<name>.json` (or the directory in
+`SERIAL_DECK_PROFILE_DIR`). The pairing form then offers a *Profile* list that
+fills the fields, and `serial-deck-web --profile NAME` / `serial_deck.mcp_server
+--profile NAME` take the default baud, mode and tool prefix from it:
+
+```json
+{"label": "My board", "remote_socket": "/run/svc.sock.stream", "control_socket": "/run/svc.sock",
+ "screen_path": "/api/screen?format=jpeg", "restart_args": ["a", "b"],
+ "follow_socket_suffix": ".stream", "mcp_tool_prefix": "board",
+ "default_baud": 2000000, "default_mode": "control"}
+```
+
+A profile is data only. A file with an unknown key or an invalid value is
+reported and skipped (the others still load), and there is deliberately no key
+that runs a command: the restart command is typed at pairing and stays on the host.
 
 ## Automation
 

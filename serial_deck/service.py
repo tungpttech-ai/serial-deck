@@ -14,6 +14,7 @@ from pathlib import Path
 
 try:
     from . import ipc, script_supervisor, scripting, ssh_socket
+    from . import profiles as profiles_module
     from .hub import UartHub
     from .uart_client import is_device_port, is_non_serial_port, port_identity, usb_identity
 except ImportError:
@@ -21,6 +22,7 @@ except ImportError:
     import script_supervisor
     import scripting
     import ssh_socket
+    import profiles as profiles_module
     from hub import UartHub
     from uart_client import is_device_port, is_non_serial_port, port_identity, usb_identity
 
@@ -29,7 +31,8 @@ PROTOCOL = "serial-deck-multiport-v1"
 # SSH device actions, served by the root socket only. Pairing carries a
 # password or passphrase: those requests are never logged and the secret is
 # dropped after the one ssh process that needs it.
-SSH_ACTIONS = ("ssh_devices", "ssh_fingerprint", "ssh_pair", "ssh_forget", "ssh_retry", "ssh_unlock")
+SSH_ACTIONS = ("ssh_devices", "ssh_fingerprint", "ssh_pair", "ssh_forget", "ssh_retry", "ssh_unlock",
+               "ssh_restart", "ssh_screen", "ssh_profiles")
 # User scripts run as supervised processes owned by this daemon (script_supervisor).
 SCRIPT_ACTIONS = ("script_list", "script_run", "script_stop", "script_status", "script_logs",
                   "script_autorun")
@@ -445,6 +448,9 @@ class MultiPortHub(UartHub):
                             live[state["device"]] = state
                 return {"ok": True, "supported": ssh_socket.supported(),
                         "devices": ssh_socket.list_devices(store, live)}
+            if action == "ssh_profiles":
+                profiles, problems = profiles_module.load_all()
+                return {"ok": True, "profiles": list(profiles.values()), "problems": problems}
             if action == "ssh_fingerprint":
                 port = request.get("ssh_port", 22)
                 return {"ok": True, **ssh_socket.fingerprint(store, str(request.get("host", "")),
@@ -474,6 +480,11 @@ class MultiPortHub(UartHub):
                 secret = bytearray(value.encode("utf-8")) if isinstance(value, str) and value else None
                 value = None
                 return {"ok": True, **ssh_socket.forget(store, name, bool(request.get("local_only")), secret)}
+            if action == "ssh_restart":
+                value = request.pop("passphrase", None)
+                secret = bytearray(value.encode("utf-8")) if isinstance(value, str) and value else None
+                value = None
+                return {"ok": True, **ssh_socket.restart(store, name, str(request.get("arg", "")), secret)}
             channel = self._ssh_channel(name)
             transport = channel.serial if channel is not None else None
             if transport is None:
@@ -481,6 +492,18 @@ class MultiPortHub(UartHub):
             if action == "ssh_retry":
                 transport.retry_now()
                 return {"ok": True, "link": transport.link_state()}
+            if action == "ssh_screen":
+                screen_path = transport.device.get("screen_path", "")
+                control = transport.control_socket
+                if not screen_path:
+                    raise RuntimeError(f"{name} has no screen_path")
+                if not control:
+                    raise RuntimeError(f"{name} is not connected")
+                after = request.get("after_revision")
+                return {"ok": True, **ssh_socket.screen_frame(
+                    control, screen_path, after if type(after) is int else None,
+                    transport.device.get("screen_revision_header", "x-revision"),
+                    transport.device.get("screen_size_header", "x-size"))}
             # ssh_unlock
             value = request.pop("passphrase", None)
             secret = bytearray(value.encode("utf-8")) if isinstance(value, str) else bytearray()

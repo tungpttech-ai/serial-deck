@@ -575,6 +575,52 @@ class SshSocketPairingTest(unittest.TestCase):
             other.claim_port("ssh-socket://lab2", 115200)
         self.assertEqual(getattr(raised.exception, "code", ""), "host_key_changed")
 
+    def test_hub_serves_screen_and_restart_extras(self):
+        from serial_deck.service import MultiPortHub
+        body = b"\xff\xd8frame\xff\xd9"
+        ctl = self.root / "ctl.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(ctl))
+        server.listen(4)
+        self.addCleanup(server.close)
+
+        def http():
+            while True:
+                try:
+                    client, _ = server.accept()
+                except OSError:
+                    return
+                with client:
+                    client.recv(4096)
+                    client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nX-Revision: 3\r\n\r\n" + body)
+        threading.Thread(target=http, daemon=True).start()
+        self.config["sockets"]["/run/console.ctl"] = str(ctl)
+        self.write_config()
+        marker = self.home / "restarted"
+        self.pair(control_socket="/run/console.ctl", screen_path="/screen", restart_args=["null", "alt"],
+                  restart_cmd=f"echo $RESTART_ARG > {marker}")
+        self.assertIn("RESTART_CMD=", (self.home / ".config" / "serial-deck" / "ssh.conf").read_text())
+        self.assertNotIn("RESTART", self.store.devices_path.read_text())
+        hub = MultiPortHub(str(self.root / "hub.sock"))
+        hub.start()
+        self.addCleanup(hub.close)
+        manager = HubProcessManager(socket_path=str(hub.socket_path))
+        with self.assertRaisesRegex(RuntimeError, "not connected"):
+            manager.request_control("ssh_screen", name="lab")
+        manager.claim_port("ssh-socket://lab", 115200)
+        frame = manager.request_control("ssh_screen", name="lab")
+        self.assertEqual((frame["revision"], frame["changed"]), (3, True))
+        self.assertEqual(__import__("base64").b64decode(frame["data"]), body)
+        result = manager.request_control("ssh_restart", name="lab", arg="alt")
+        self.assertEqual(result["arg"], "alt")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
+        self.assertEqual(marker.read_text().strip(), "alt")
+        with self.assertRaises(RuntimeError) as raised:
+            manager.request_control("ssh_restart", name="lab", arg="other")
+        self.assertEqual(getattr(raised.exception, "code", ""), "invalid_argument")
+
 
 @posix_only
 class HelperScriptTest(unittest.TestCase):
@@ -607,6 +653,142 @@ class HelperScriptTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2, command)
             self.assertEqual(result.stdout, "", command)
 
+    def write_conf(self, text: str, mode: int = 0o600) -> Path:
+        conf = self.dir / ".config" / "serial-deck" / "ssh.conf"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(text)
+        conf.chmod(mode)
+        return conf
+
+    def test_restart_runs_the_host_command_with_one_plain_word(self):
+        if os.getuid() == 0:
+            self.skipTest("root reads /etc/serial-deck")
+        marker = self.dir / "restarted"
+        self.write_conf(f'RESTART_CMD="echo \\$RESTART_ARG > {marker}"\n')
+        result = self.run_verb("restart alt")
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "restart alt"), result.stderr)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
+        self.assertEqual(marker.read_text().strip(), "alt")
+        for command in ("restart", "restart a;id", "restart $(id)", "restart ../x"):
+            self.assertEqual(self.run_verb(command).returncode, 2, command)
+
+    def test_restart_refuses_missing_or_writable_config(self):
+        if os.getuid() == 0:
+            self.skipTest("root reads /etc/serial-deck")
+        self.assertIn("no restart command", self.run_verb("restart alt").stderr)
+        for mode in (0o622, 0o602, 0o620):
+            self.write_conf('RESTART_CMD="true"\n', mode)
+            result = self.run_verb("restart alt")
+            self.assertEqual(result.returncode, 2, oct(mode))
+            self.assertIn("writable", result.stderr)
+
+
+class ScreenFrameTest(unittest.TestCase):
+    """`screen_frame` over a local Unix-socket HTTP server (the forwarded control socket)."""
+
+    def serve(self, response: bytes) -> str:
+        directory = tempfile.mkdtemp(prefix="sd-screen-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "ctl.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(path)
+        server.listen(1)
+        self.addCleanup(server.close)
+        self.requests: list[bytes] = []
+
+        def run():
+            client, _ = server.accept()
+            with client:
+                self.requests.append(client.recv(4096))
+                client.sendall(response)
+        threading.Thread(target=run, daemon=True).start()
+        return path
+
+    @posix_only
+    def test_jpeg_frame_and_revision(self):
+        body = b"\xff\xd8jpeg\xff\xd9"
+        path = self.serve(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nX-Frame-Rev: 7\r\n"
+                          b"X-Frame-Size: 480x800\r\n\r\n" + body)
+        frame = ssh_socket.screen_frame(path, "/api/face/frame?format=jpeg", 6, "X-Frame-Rev", "X-Frame-Size")
+        self.assertIn(b"GET /api/face/frame?format=jpeg&after=6 ", self.requests[0])
+        self.assertEqual((frame["revision"], frame["changed"], frame["size"], frame["bytes"]), (7, True, "480x800", 8))
+        self.assertEqual(__import__("base64").b64decode(frame["data"]), body)
+
+    @posix_only
+    def test_unchanged_and_error(self):
+        path = self.serve(b"HTTP/1.1 304 Not Modified\r\nX-Revision: 7\r\n\r\n")
+        self.assertEqual(ssh_socket.screen_frame(path, "/screen", 7), {"revision": 7, "changed": False})
+        path = self.serve(b"HTTP/1.1 404 Not Found\r\n\r\n")
+        with self.assertRaises(ssh_socket.SshSocketError) as raised:
+            ssh_socket.screen_frame(path, "/screen", None)
+        self.assertEqual(raised.exception.state, "screen_unavailable")
+        for bad in (b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 99\r\n\r\nshort",
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabcde\r\n0\r\n\r\n",
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n\r\n" + b"x" * (ssh_socket.FRAME_MAX_BYTES + 10000)):
+            path = self.serve(bad)
+            with self.assertRaises(ssh_socket.SshSocketError, msg=bad[:80]) as raised:
+                ssh_socket.screen_frame(path, "/screen", None)
+            self.assertEqual(raised.exception.state, "screen_unavailable")
+
+    @posix_only
+    def test_default_headers_are_x_revision_and_x_size(self):
+        path = self.serve(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nX-Revision: 3\r\nX-Size: 2x2\r\n\r\nabc")
+        frame = ssh_socket.screen_frame(path, "/screen", None)
+        self.assertEqual((frame["revision"], frame["size"]), (3, "2x2"))
+        path = self.serve(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nX-Frame-Rev: 3\r\n\r\nabc")
+        self.assertIsNone(ssh_socket.screen_frame(path, "/screen", None)["revision"])  # other names need the profile
+
+    def test_follow_suffix_follows_a_service_that_moved(self):
+        device = {"name": "lab", "remote_socket": "/tmp/svc.sock.stream", "control_socket": "/tmp/svc.sock",
+                  "follow_socket_suffix": ".stream"}
+        with patch.object(ssh_socket, "verb", return_value="/run/svc/svc.sock.stream\n"):
+            self.assertEqual(ssh_socket.probe_socket(device, None), "/run/svc/svc.sock.stream")
+        self.assertEqual((device["remote_socket"], device["control_socket"]),
+                         ("/run/svc/svc.sock.stream", "/run/svc/svc.sock"))
+        plain = {"name": "lab", "remote_socket": "/tmp/svc.sock.stream"}  # no suffix configured: never guess
+        with patch.object(ssh_socket, "verb", return_value="/run/svc/svc.sock.stream\n"):
+            with self.assertRaises(ssh_socket.SshSocketError) as raised:
+                ssh_socket.probe_socket(plain, None)
+        self.assertEqual(raised.exception.state, "socket_missing")
+
+    def test_restart_hint_comes_from_the_profile(self):
+        store = type("Store", (), {"get": lambda self, name: {"name": "lab", "restart_args": ["alt"],
+                                                              "restart_conf_hint": "MY_VAR in /etc/my.conf"},
+                                   "save": lambda self, device: None})()
+        error = ssh_socket.SshSocketError("remote_failed", "serial-deck-ssh: no restart command: set X")
+        with patch.object(ssh_socket, "verb", side_effect=error):
+            with self.assertRaises(ssh_socket.SshSocketError) as raised:
+                ssh_socket.restart(store, "lab", "alt")
+        self.assertIn("MY_VAR in /etc/my.conf", str(raised.exception))
+
+    def test_new_profile_fields_are_validated(self):
+        base = {"name": "lab", "host": "h", "user": "pi", "remote_socket": "/run/x.sock"}
+        good = ssh_socket.validate_profile({**base, "follow_socket_suffix": ".stream",
+                                            "screen_revision_header": "X-Frame-Rev", "restart_conf_hint": "edit ssh.conf"})
+        self.assertEqual((good["follow_socket_suffix"], good["screen_revision_header"]), (".stream", "X-Frame-Rev"))
+        for bad in ({"follow_socket_suffix": "stream"}, {"follow_socket_suffix": "/x"},
+                    {"screen_revision_header": "X Rev"}, {"screen_size_header": "X:Size"},
+                    {"restart_conf_hint": "a\nb"}, {"restart_conf_hint": "x" * 300}):
+            with self.assertRaises(ssh_socket.SshSocketError, msg=str(bad)):
+                ssh_socket.validate_profile({**base, **bad})
+
+    def test_profile_extras_are_validated(self):
+        base = {"name": "lab", "host": "h", "user": "pi", "remote_socket": "/run/x.sock"}
+        profile = ssh_socket.validate_profile({**base, "control_socket": "/run/x.ctl",
+                                               "screen_path": "/api/face/frame?format=jpeg",
+                                               "restart_args": ["null", "alt"]})
+        self.assertEqual(profile["restart_args"], ["null", "alt"])
+        for bad in ({"screen_path": "/s"}, {"control_socket": "rel", "screen_path": "/s"},
+                    {"control_socket": "/c", "screen_path": "http://x/"}, {"restart_args": ["a b"]},
+                    {"restart_args": "alt"}):
+            with self.assertRaises(ssh_socket.SshSocketError, msg=str(bad)):
+                ssh_socket.validate_profile({**base, **bad})
+        self.assertEqual(ssh_socket.restart_conf("systemctl restart d"), "RESTART_CMD='systemctl restart d'")
+        with self.assertRaises(ssh_socket.SshSocketError):
+            ssh_socket.restart_conf("a\nb")
+
 
 class WebSshActionsTest(unittest.TestCase):
     def handler(self, token="tok", supplied=""):
@@ -618,7 +800,7 @@ class WebSshActionsTest(unittest.TestCase):
 
     def test_host_changing_actions_need_the_page_token(self):
         web, handler = self.handler(supplied="")
-        for name in ("pair", "forget", "unlock"):
+        for name in ("pair", "forget", "unlock", "restart"):
             body = {"name": "lab", "password": "x", "passphrase": "y"}
             result, status = web.DeckHttpHandler._ssh_request(handler, name, body)
             self.assertEqual(status, web.HTTPStatus.FORBIDDEN, name)

@@ -264,6 +264,39 @@ class McpEndToEndTest(unittest.TestCase):
             self.assertIn("[mcp] button ENTER long_press", [r["text"] for r in logs["records"]])
         self.run_client("interact", body)
 
+    def test_screenshot_and_restart_need_an_ssh_device(self):
+        async def body(tool, agent):
+            await tool("serial_connect", {"port": self.port, "baud": 115200})
+            for name, args in (("serial_screenshot", {}), ("serial_restart", {"arg": "alt"})):
+                result = await tool(name, args)
+                self.assertTrue(result.is_error, name)
+                self.assertIn("not_supported", json.dumps(result.structured_content))
+            # A frame comes back as an image block next to its metadata.
+            frame = {"revision": 4, "changed": True, "size": "2x2", "bytes": 3, "data": "AAAA"}
+            with patch.object(agent, "screenshot", return_value=frame):
+                shot = await tool("serial_screenshot")
+            self.assertEqual(shot.structured_content["revision"], 4)
+            self.assertEqual([c.type for c in shot.content], ["text", "image"])
+        self.run_client("hardware", body)
+
+    def test_tool_prefix_renames_every_tool(self):
+        agent = DeckAgent(policy="interact", socket_path=self.socket, snapshot_root=self.store)
+        server = build_server(agent, "board")
+
+        async def main():
+            async with Client(server) as client:
+                names = {tool.name for tool in (await client.list_tools()).tools}
+                self.assertIn("board_connect", names)
+                self.assertIn("board_screenshot", names)
+                self.assertFalse(any(name.startswith("serial_") for name in names))
+                missing = await client.call_tool("board_query", {"kind": "fsm"})
+                self.assertIn("call board_connect first", json.dumps(missing.structured_content))
+                status = (await client.call_tool("board_status", {})).structured_content
+                self.assertIn("board_reset", status["disabled_tools"])
+        self.loop.run_until_complete(main())
+        with self.assertRaises(ValueError):
+            build_server(agent, "Bad-Prefix")
+
     def test_legacy_hub_is_refused_without_side_effects(self):
         agent = DeckAgent(policy="observe", socket_path=self.socket)
         with patch.object(agent_mod.HubProcessManager, "get_status", return_value={"protocol": None}):

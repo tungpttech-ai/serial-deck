@@ -899,6 +899,31 @@ class DeckAgent:
         session.note("ui.show_info")
         return session.request("ui.show_info", {}, timeout)
 
+    def _ssh_session_name(self, port: str | None, what: str) -> tuple[Session, str]:
+        session = self.session(port)
+        session.ensure_alive()
+        if not session.port.startswith(ssh_socket.SCHEME):
+            raise AgentError("not_supported", f"{what} needs a paired SSH device")
+        return session, ssh_socket.device_name(session.port)
+
+    def screenshot(self, port: str | None, after_revision: int | None) -> dict[str, Any]:
+        session, name = self._ssh_session_name(port, "a screenshot")
+        try:
+            return session.manager.request_control("ssh_screen", timeout=8.0, name=name,
+                                                   after_revision=after_revision)
+        except (OSError, RuntimeError) as exc:
+            raise AgentError("transport_unavailable", f"screen frame failed: {exc}",
+                             "pair the device with a control_socket and screen_path") from exc
+
+    def restart(self, port: str | None, arg: str) -> dict[str, Any]:
+        self.require("hardware")
+        session, name = self._ssh_session_name(port, "restart")
+        session.note(f"restart {arg}")
+        try:
+            return session.manager.request_control("ssh_restart", timeout=30.0, name=name, arg=arg)
+        except (OSError, RuntimeError) as exc:
+            raise AgentError(getattr(exc, "code", "") or "transport_unavailable", f"restart failed: {exc}") from exc
+
     def reset(self, port: str | None, wait_for: list[str] | None, timeout: float,
               cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
         self.require("hardware")
