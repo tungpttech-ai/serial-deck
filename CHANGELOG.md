@@ -1,6 +1,55 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-28)
+
+- Device profiles (`serial_deck/profiles.py`): JSON presets in
+  `~/.config/serial-deck/profiles/` (`SERIAL_DECK_PROFILE_DIR`) that fill the SSH
+  pairing form (hub action `ssh_profiles`) and give `serial-deck-web --profile` /
+  `mcp_server --profile` their default baud, mode and tool prefix. Data only,
+  validated like the form; unknown keys are refused. New SSH profile fields,
+  settable by a profile: `follow_socket_suffix` (follow a service that moved to
+  another directory), `screen_revision_header` / `screen_size_header`,
+  `restart_conf_hint`. Product names no longer appear in the code.
+- Auto-connect finds the right port again after tty numbers change, also for
+  composite boards that expose several ttys with one vid:pid and serial (two
+  CDC-ACM ports per board, `ttyACM0` console + `ttyACM1`):
+  - Identity gains `usb_interface` (sysfs `bInterfaceNumber`, two hex digits);
+    reconnect, device rules, restore-on-start and script autorun match it exactly
+    when saved. Settings saved before this keep working (no interface = as before);
+    Windows/macOS have no sysfs, so the field stays empty there. Aliases of one
+    tty (`/dev/serial/by-id/...`) count once.
+  - A Disconnect pressed while a reconnect is already opening the port now wins
+    (it waits for the in-flight connect and drops it).
+  - Device rules: a port opened by hand or by restore is not re-opened after the
+    user disconnects it; a busy port is retried at most 3 times per plug-in (each
+    open can reset a board); a single empty port listing no longer counts as
+    "everything unplugged".
+  - Restore on start keeps the ports that were not restored (a board still
+    unplugged) instead of forgetting them; no duplicate for a legacy entry.
+
+- `tests/test_hub_throughput.py`: the hub must fan 1 MB/s (5x a 2 Mbaud UART) out
+  to 4 clients with no byte lost. Measured: ~20% CPU at 1 MB/s/4 clients, ~35% at
+  3 MB/s, no drops, so the hub stays in Python (one implementation for every
+  OS); a single-port Rust hub is not carried over.
+
+- MCP `--tool-prefix NAME` (`SERIAL_DECK_MCP_TOOL_PREFIX`): every tool, hint and
+  the instructions use `NAME_` instead of `serial_`, so an existing registration
+  (for example `board_*`) keeps working.
+- Web/App `--mode control|linux`: the console mode a new connection starts in
+  (default stays `linux`, which never transmits on its own).
+- SSH device extras (screen preview, host-side restart):
+  - Optional `control_socket` + `screen_path` per profile: the tunnel forwards the
+    control socket too; hub root action `ssh_screen` GETs the JPEG (304 by
+    revision), the SSH card shows a 2 fps preview, MCP `serial_screenshot`
+    (observe) returns it as an image.
+  - Optional `restart_args` + a one-off `restart_cmd` at pairing: the command goes
+    to the host's helper config (`RESTART_CMD`, owner-only, refused when
+    group/world writable), never to this machine. Helper verb `restart <word>`
+    runs it detached with `$RESTART_ARG`; hub `ssh_restart`, a confirm-first button
+    per argument in the SSH card (page token required), MCP `serial_restart`
+    (hardware).
+  - Helper is now `serial-deck-ssh 2`; hosts paired with version 1 keep
+    streaming and report `helper_outdated` for restart until paired again.
 
 - Auto-connect, always off until you turn it on (opening a UART can reset a
   board):
@@ -27,7 +76,6 @@
 - Linux frozen bundles now include the Qt WebEngine backend and open the
   dashboard in a native window by default.
 
-## Unreleased
 
 - Devices that are not a physical UART: `unix:///path` (a local stream socket)
   next to `tcp://` and `udp://`. They have no baud, DTR/RTS, reset, bootloader

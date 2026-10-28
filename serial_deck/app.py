@@ -353,6 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serial Deck in a native pywebview window")
     parser.add_argument("--port", default="", help="initial physical UART selection for the hub")
     parser.add_argument("--baud", type=int, default=2000000, help="initial UART baudrate")
+    parser.add_argument("--mode", choices=("control", "linux"), default="linux",
+                        help="initial console mode (control: firmware with the control protocol)")
     parser.add_argument("--socket", default=DEFAULT_SOCKET, help="hub endpoint path")
     parser.add_argument("--attach-only", action="store_true", help="require an existing hub")
     parser.add_argument("--elf", default="", help="application ELF file for address symbolization")
@@ -440,7 +442,7 @@ def run_app(args: argparse.Namespace,
               file=sys.stderr, flush=True)
         try:
             backend = backend_factory(APP_HOST, 0, args.port, args.baud, args.socket,
-                                      args.attach_only, args.elf)
+                                      args.attach_only, args.elf, getattr(args, "mode", "linux"))
         except HubStartupError as exc:
             print(f"Hub startup failed: {exc}", file=sys.stderr)
             return 2
@@ -452,7 +454,7 @@ def run_app(args: argparse.Namespace,
     # Always a fresh ephemeral loopback port: never another app's server.
     try:
         backend = backend_factory(APP_HOST, 0, args.port, args.baud, args.socket,
-                                  args.attach_only, args.elf)
+                                  args.attach_only, args.elf, getattr(args, "mode", "linux"))
     except HubStartupError as exc:
         print(f"Hub startup failed: {exc}", file=sys.stderr)
         return 2

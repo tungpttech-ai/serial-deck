@@ -27,10 +27,12 @@ from typing import Any, Callable
 try:
     from . import runtime, scripting
     from .deckconfig import JsonFile
+    from .uart_client import usb_matches
 except ImportError:
     import runtime
     import scripting
     from deckconfig import JsonFile
+    from uart_client import usb_matches
 
 LOG_LINES = 500          # per run
 LOG_LINE_CHARS = 2000
@@ -113,7 +115,8 @@ class ScriptSupervisor:
         with self.store.lock:
             rules = [r for r in self.autorun_rules() if r["name"] != name]
             if enabled:
-                match = {k: str(v)[:256] for k, v in (match or {}).items() if k in ("port", "usb_vid_pid", "usb_serial")}
+                match = {k: str(v)[:256] for k, v in (match or {}).items()
+                         if k in ("port", "usb_vid_pid", "usb_serial", "usb_interface")}
                 if not match:
                     raise ValueError("an autorun rule needs a port or a USB vid:pid to attach to")
                 rules.append({"name": name, "match": match, "enabled": True, "baud": baud or 115200})
@@ -252,7 +255,5 @@ class ScriptSupervisor:
     @staticmethod
     def _matches(match: dict[str, str], port: str, identity: dict[str, str]) -> bool:
         if match.get("usb_vid_pid"):
-            if identity.get("usb_vid_pid", "").lower() != match["usb_vid_pid"].lower():
-                return False
-            return not match.get("usb_serial") or identity.get("usb_serial") == match["usb_serial"]
+            return usb_matches(match, identity)
         return bool(match.get("port")) and match["port"] == port

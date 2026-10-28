@@ -754,15 +754,26 @@ def serial_port_details(device: str, description: str = "", manufacturer: str = 
     return {"device": device, "description": name, "label": f"{device} - {name}"}
 
 
+SYS_CLASS_TTY = Path("/sys/class/tty")  # a test points it at a fake sysfs
+
+
 def usb_identity(device: str) -> dict[str, str]:
-    """USB vid:pid:serial for a tty from sysfs, without opening it."""
+    """USB vid:pid, serial and interface number for a tty from sysfs, without opening it.
+
+    `usb_interface` ("00", "02", ...) tells apart the several ttys one composite
+    device exposes with the same vid:pid and serial; "" where there is no sysfs
+    (Windows, macOS) or the tty is not an interface of a USB device.
+    """
     if not device.startswith("/dev/"):
         return {}
     try:
-        parent = (Path("/sys/class/tty") / Path(os.path.realpath(device)).name / "device").resolve()
+        parent = (SYS_CLASS_TTY / Path(os.path.realpath(device)).name / "device").resolve()
     except OSError:
         return {}
+    interface = ""
     for ancestor in (parent, *list(parent.parents)[:4]):
+        if not interface:  # the nearest one: the interface this tty belongs to
+            interface = _interface_number(ancestor)
         try:
             vid = (ancestor / "idVendor").read_text().strip()
             pid = (ancestor / "idProduct").read_text().strip()
@@ -772,27 +783,50 @@ def usb_identity(device: str) -> dict[str, str]:
             serial = (ancestor / "serial").read_text().strip()
         except OSError:
             serial = ""
-        return {"usb_vid_pid": f"{vid}:{pid}", "usb_serial": serial}
+        return {"usb_vid_pid": f"{vid}:{pid}", "usb_serial": serial, "usb_interface": interface}
     return {}
 
 
-def find_port_by_usb(vid_pid: str, serial: str, candidates: list[str] | None = None) -> str | None:
-    """The current tty of a USB device identified by `vid:pid` and serial number.
+def _interface_number(path: Path) -> str:
+    try:
+        value = (path / "bInterfaceNumber").read_text().strip().lower()
+    except OSError:
+        return ""
+    return value if re.fullmatch(r"[0-9a-f]{2}", value) else ""
+
+
+def usb_matches(saved: dict[str, str], observed: dict[str, str]) -> bool:
+    """Whether `observed` (from usb_identity) is the device `saved` describes.
+
+    vid:pid must match; a saved serial must match. A saved interface must match
+    exactly and an observed one that cannot be read does not match: guessing
+    between two ttys of one board would open the wrong one. A saved identity
+    without an interface (older settings) behaves as before.
+    """
+    if not saved.get("usb_vid_pid") or observed.get("usb_vid_pid", "").lower() != saved["usb_vid_pid"].lower():
+        return False
+    if saved.get("usb_serial") and observed.get("usb_serial") != saved["usb_serial"]:
+        return False
+    if saved.get("usb_interface") and observed.get("usb_interface") != saved["usb_interface"]:
+        return False
+    return True
+
+
+def find_port_by_usb(vid_pid: str, serial: str, candidates: list[str] | None = None,
+                     interface: str = "") -> str | None:
+    """The current tty of a USB device identified by `vid:pid`, serial and interface.
 
     A replug can bring the same board back as another path (ttyACM0 -> ttyACM1,
     COM5 -> COM7), so a reconnect looks the device up by identity. Without a
     serial number several identical boards are indistinguishable: refuse to guess
-    unless exactly one matches.
+    unless exactly one matches. Aliases of one tty (/dev/serial/by-id/...) count once.
     """
-    found = []
+    saved = {"usb_vid_pid": vid_pid, "usb_serial": serial, "usb_interface": interface}
+    found: dict[str, str] = {}
     for device in (candidates if candidates is not None else discover_serial_ports()):
-        identity = usb_identity(device)
-        if identity.get("usb_vid_pid") != vid_pid:
-            continue
-        if serial and identity.get("usb_serial") != serial:
-            continue
-        found.append(device)
-    return found[0] if len(found) == 1 else None
+        if usb_matches(saved, usb_identity(device)):
+            found.setdefault(port_identity(device), device)
+    return next(iter(found.values())) if len(found) == 1 else None
 
 
 def discover_serial_port_details() -> list[dict[str, str]]:

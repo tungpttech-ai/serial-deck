@@ -77,6 +77,11 @@ class DeckWebTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             DeckWebBridge().set_console_mode("windows")
 
+    def test_initial_console_mode(self):
+        self.assertEqual(DeckWebBridge().console_mode, "linux")
+        self.assertEqual(DeckWebBridge(default_mode="control").console_mode, "control")
+        self.assertEqual(DeckWebBridge(default_mode="windows").console_mode, "linux")
+
     def test_flash_progress_parsing(self):
         pct, step = parse_flash_progress("Writing at 0x00010000... (45 %)")
         self.assertEqual(pct, 45)
