@@ -289,6 +289,30 @@ class ConsoleP1Test(unittest.TestCase):
         self.assertIn("e.composedPath()", HTML_PAGE)  # clicking a re-rendered tag row must not close the menu
 
 
+class ConsoleP2Test(unittest.TestCase):
+    def test_query_syntax_is_opt_in_and_validated(self):
+        self.assertIn("function parseQuery(text)", HTML_PAGE)
+        self.assertIn("if (!clauses.length) return null;", HTML_PAGE)  # no key:value term: plain text as before
+        self.assertIn("level: expects error, warning", HTML_PAGE)  # a bad value is reported, not ignored
+        self.assertIn("if (!isRegex) {", HTML_PAGE)  # regex mode never reinterprets the text
+
+    def test_export_offers_shown_buffer_and_hub_history(self):
+        menu = HTML_PAGE.split('id="exportMenu"', 1)[1].split("</details>", 1)[0]
+        for call in ("exportBuffer('filtered')", "exportBuffer('all')", "exportLogs()"):
+            self.assertIn(call, menu)
+        self.assertIn("link.download = 'serial_console.log'", HTML_PAGE)  # hub history path unchanged
+
+    def test_counters_come_from_bytes_this_window_handled(self):
+        self.assertIn("conn.rxBytes += bytes.length", HTML_PAGE)
+        self.assertIn("conn0().txBytes += out.bytes || 0", HTML_PAGE)
+        self.assertNotIn("Drops", HTML_PAGE)  # no counter exists for it, so none is shown
+
+    def test_telemetry_trends_use_numeric_fields_only(self):
+        self.assertIn("typeof tel[k] !== 'number'", HTML_PAGE)
+        self.assertIn('id="telSpark"', HTML_PAGE)
+        self.assertIn("function tagColor(tag)", HTML_PAGE)
+
+
 class SmallWindowLogLayoutTest(unittest.TestCase):
     """Shrinking the window made the log grow to every line instead of scrolling."""
 

@@ -2079,7 +2079,7 @@ HTML_PAGE = """<!DOCTYPE html>
     .log-row.struct .lr-line { display: grid; grid-template-columns: 5.6rem 1rem 11rem minmax(0, 1fr); column-gap: .6rem; }
     .lr-time { color: #849396; font-size: 10px; width: 5.6rem; flex-shrink: 0; user-select: none; }
     .lr-lvl { font-weight: 700; text-align: center; }
-    .lr-tag { color: #7fc6d1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lr-tag { color: #7fc6d1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .lr-msg { color: #e2e2e8; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; flex: 1 1 0; }
     .lv-error, .m-error { color: #ff6b61; }
     .lv-warning, .m-warning { color: #ffb778; }
@@ -2121,6 +2121,7 @@ HTML_PAGE = """<!DOCTYPE html>
     .kb { display: flex; align-items: center; gap: 4px; padding: 1px 0; color: #bac9cc; }
     .kb span { margin-left: auto; color: #e2e2e8; }
     kbd { padding: 0 5px; border: 1px solid #3b494c; border-radius: 3px; background: #111318; font-size: 10px; }
+.spark { padding: 8px; background: #1e2024; border: 1px solid #3b494c; border-radius: 6px; }
     .tl-row { display: flex; align-items: baseline; gap: .6rem; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
     .tl-row:hover { background: rgba(255,255,255,.05); }
     .tl-state { color: #7fc6d1; }
@@ -2445,9 +2446,16 @@ HTML_PAGE = """<!DOCTYPE html>
             <button id="splitViewBtn" onclick="toggleSplitView()" title="Split console: watch a second connection side by side" aria-label="Split console" class="tb-btn">
               <i class="fa-solid fa-table-columns" aria-hidden="true"></i><span class="hidden xl:inline">Split</span>
             </button>
-            <button onclick="exportLogs()" title="Export the hub's log history (last 2000 lines) as a file" aria-label="Export logs" class="tb-btn">
-              <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i><span class="hidden xl:inline">Export</span>
-            </button>
+            <details id="exportMenu" class="pop relative">
+              <summary class="tb-btn list-none cursor-pointer select-none" title="Export logs as a file" aria-label="Export logs">
+                <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i><span class="hidden xl:inline">Export</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+              </summary>
+              <div class="pop-panel w-72 right-0 left-auto">
+                <button type="button" onclick="exportBuffer('filtered')" class="da-item"><i class="fa-solid fa-filter" aria-hidden="true"></i><span>Shown lines</span><span class="da-note">filter applied</span></button>
+                <button type="button" onclick="exportBuffer('all')" class="da-item"><i class="fa-solid fa-database" aria-hidden="true"></i><span>This window's buffer</span><span class="da-note">up to 20000</span></button>
+                <button type="button" onclick="document.getElementById('exportMenu').open=false;exportLogs()" class="da-item"><i class="fa-solid fa-server" aria-hidden="true"></i><span>Hub history</span><span class="da-note">last 2000</span></button>
+              </div>
+            </details>
             <button onclick="clearCurrentLogs()" title="Clear this view (the hub keeps its own history, which Export uses)" aria-label="Clear view" class="tb-btn tb-danger">
               <i class="fa-solid fa-trash-can" aria-hidden="true"></i><span class="hidden xl:inline">Clear</span>
             </button>
@@ -2456,9 +2464,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <!-- Filter (hides lines) / Find (highlights lines) / level chips / view mode / Pause / Follow -->
         <div id="consoleFilters" class="flex items-center gap-1.5 flex-wrap text-xs">
-          <div id="filterGroup" class="tb-group" title="Filter: lines that do not match are hidden (they stay buffered)">
+          <div id="filterGroup" class="tb-group" title="Filter: lines that do not match are hidden (they stay buffered). Terms: level:error tag:wifi text:timeout (all must match); anything else is plain text. Turn on .* for a regular expression.">
             <i class="fa-solid fa-filter text-[10px] text-brand-muted" aria-hidden="true"></i>
-            <input id="logSearchInput" oninput="onFilterInput()" type="text" autocomplete="off" spellcheck="false" aria-label="Filter lines" placeholder="Filter lines…" class="tb-input mono w-40">
+            <input id="logSearchInput" oninput="onFilterInput()" type="text" autocomplete="off" spellcheck="false" aria-label="Filter lines" placeholder="Filter, or level:error tag:wifi text:timeout" class="tb-input mono w-56">
             <button id="filterRegexBtn" type="button" class="tb-toggle mono" aria-pressed="false" aria-label="Filter: treat as regular expression" title="Regular expression" onclick="toggleRegex('filter')">.*</button>
           </div>
           <span id="filterError" class="hidden text-brand-danger text-[11px] mono max-w-[16rem] truncate" role="alert"></span>
@@ -2595,6 +2603,8 @@ HTML_PAGE = """<!DOCTYPE html>
           <i class="fa-solid fa-database"></i>
           <span>Parsed Telemetry & JSON Snapshot</span>
         </h3>
+        <div id="telSparkEmpty" class="text-xs text-brand-muted mb-3">No numeric telemetry fields received yet. Numeric values the device reports appear here as trends (this window only).</div>
+        <div id="telSpark" class="grid gap-3 mb-4" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))"></div>
         <pre id="inspectorContent" class="mono text-xs bg-brand-surface border border-brand-border p-4 rounded-xl text-brand-cyan overflow-x-auto">{}</pre>
       </div>
 
@@ -2629,8 +2639,9 @@ HTML_PAGE = """<!DOCTYPE html>
       <div id="statusBar" role="status" class="shrink-0 flex items-center gap-x-4 gap-y-0.5 flex-wrap px-3 py-0.5 border-t border-brand-border bg-brand-bg text-[11px] mono text-brand-muted">
         <span id="sbConn" class="flex items-center gap-1.5"></span>
         <span id="sbFollow"></span>
-        <span id="sbRate" title="Measured from what this window received in the last second">RX --</span>
+        <span id="sbRate" title="Measured from what this window received in the last second (line text only in Control mode)">RX --</span>
         <span id="sbLines"></span>
+        <span id="sbTotals" title="Bytes this window has received and sent on this connection since it was opened"></span>
         <span id="sbTrim" class="hidden text-brand-warning" title="Oldest lines dropped from this window's buffer (limit 20000). The hub keeps its own history."></span>
         <span class="ml-auto hidden lg:inline">Click a line · Enter details · C copy line</span>
       </div>
@@ -2884,7 +2895,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!conns[id]) {
         conns[id] = { logsBuffer: [], eventsBuffer: [], rawChunks: [], rawBytes: 0, status: {}, eventSource: null,
           termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Map(), trimmed: 0, fsmLog: [], lastFsm: undefined,
-          lines: 0, lastLines: 0, rate: 0, connecting: false, error: false };
+          lines: 0, lastLines: 0, rate: 0, rxBytes: 0, lastRx: 0, rxBps: 0, txBytes: 0, telHist: {}, telLast: '', connecting: false, error: false };
         if (!connOrder.includes(id)) connOrder.push(id);
       }
       return conns[id];
@@ -2972,6 +2983,7 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('viewLogs').classList.toggle('hidden', tab !== 'logs');
       document.getElementById('viewEvents').classList.toggle('hidden', tab !== 'events');
       document.getElementById('viewTimeline').classList.toggle('hidden', tab !== 'events');
+      if (tab === 'inspector') renderSparks();
       if (tab === 'events') renderTimeline();
       document.getElementById('viewInspector').classList.toggle('hidden', tab !== 'inspector');
       document.getElementById('viewTerminal').classList.toggle('hidden', tab !== 'terminal');
@@ -3039,7 +3051,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function refreshMatchers() {
-      const f = makeMatcher(document.getElementById('logSearchInput').value, regexMode.filter);
+      const f = makeFilter(document.getElementById('logSearchInput').value, regexMode.filter);
       const g = makeMatcher(document.getElementById('findInput').value, regexMode.find);
       filterFn = f.fn; findFn = g.fn;
       const err = f.error ? 'Filter: ' + f.error : (g.error ? 'Find: ' + g.error : '');
@@ -3047,6 +3059,8 @@ HTML_PAGE = """<!DOCTYPE html>
       box.textContent = err; box.title = err;
       box.classList.toggle('hidden', !err);
       document.getElementById('filterGroup').classList.toggle('invalid', !!f.error);
+      document.getElementById('filterRegexBtn').title = f.query ? 'Query mode: level:/tag:/text: terms are active' : 'Regular expression';
+      document.getElementById('filterGroup').dataset.query = f.query ? '1' : '';
       document.getElementById('findGroup').classList.toggle('invalid', !!g.error);
     }
 
@@ -3082,7 +3096,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const lvl = entry.level || 'plain';
       const lvlKey = lvl === 'error' ? 'E' : (lvl === 'warning' ? 'W' : (lvl === 'info' ? 'I' : (lvl === 'debug' ? 'D' : (lvl === 'verbose' ? 'V' : lvl))));
       if (!enabledLevels.has(lvlKey)) return false;
-      if (filterFn && !filterFn(entry.text)) return false;
+      if (filterFn && !filterFn(entry)) return false;
       if (selectedTags.size) {
         const p = parsedLine(entry);
         if (!p || !selectedTags.has(p.tag)) return false;
@@ -3102,7 +3116,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (p) {
         const key = { error: 'E', warning: 'W', info: 'I', debug: 'D', verbose: 'V' }[entry.level];
         html += '<span class="lr-lvl lv-' + entry.level + '" title="' + entry.level + '">' + key + '</span>' +
-          '<span class="lr-tag" title="' + escapeHtml(p.tag) + '">' + escapeHtml(p.tag) + '</span>' +
+          '<span class="lr-tag" style="color:' + tagColor(p.tag) + '" title="' + escapeHtml(p.tag) + '">' + escapeHtml(p.tag) + '</span>' +
           '<span class="lr-msg m-' + entry.level + '">' + escapeHtml(p.msg) + '</span>';
       } else {
         html += '<span class="lr-msg m-' + (entry.level || 'plain') + '">' + escapeHtml(entry.text || '') + '</span>';
@@ -3394,7 +3408,9 @@ HTML_PAGE = """<!DOCTYPE html>
       const fol = document.getElementById('sbFollow');
       if (isPaused(conn)) { fol.textContent = 'Paused · +' + (conn.seq - conn.pauseSeq).toLocaleString() + ' new'; fol.className = 'text-brand-warning'; }
       else { fol.textContent = 'Follow ' + (autoScroll ? 'ON' : 'OFF'); fol.className = ''; }
-      document.getElementById('sbRate').textContent = st.connected ? 'RX ' + conn.rate.toLocaleString() + ' lines/s' : 'RX --';
+      document.getElementById('sbRate').textContent = st.connected
+        ? 'RX ' + conn.rate.toLocaleString() + ' lines/s · ' + fmtBytes(conn.rxBps) + '/s' : 'RX --';
+      document.getElementById('sbTotals').textContent = 'RX ' + fmtBytes(conn.rxBytes) + ' · TX ' + fmtBytes(conn.txBytes);
       const drawn = document.querySelectorAll('#logsPanePrimary .log-row').length;
       document.getElementById('sbLines').textContent = drawn.toLocaleString() + ' shown · ' + conn.logsBuffer.length.toLocaleString() + ' buffered';
       const trim = document.getElementById('sbTrim');
@@ -3404,7 +3420,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
     // RX rate: lines this window received per second, from a real counter.
     setInterval(() => {
-      Object.keys(conns).forEach(id => { const c = conns[id]; c.rate = c.lines - c.lastLines; c.lastLines = c.lines; });
+      Object.keys(conns).forEach(id => {
+        const c = conns[id];
+        c.rate = c.lines - c.lastLines; c.lastLines = c.lines;
+        c.rxBps = c.rxBytes - c.lastRx; c.lastRx = c.rxBytes;
+      });
       renderStatusBar();
     }, 1000);
 
@@ -3446,7 +3466,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const mark = document.createElement('i');
         mark.className = 'fa-solid ' + (on ? 'fa-square-check' : 'fa-square');
         mark.setAttribute('aria-hidden', 'true');
-        const name = document.createElement('span'); name.className = 'truncate'; name.textContent = t;
+        const name = document.createElement('span'); name.className = 'truncate'; name.textContent = t; name.style.color = tagColor(t);
         const n = document.createElement('span'); n.className = 'da-note'; n.textContent = conn.tags.get(t) || 0;
         b.append(mark, name, n);
         b.addEventListener('click', () => toggleTag(t));
@@ -3677,6 +3697,120 @@ HTML_PAGE = """<!DOCTYPE html>
       if (m.id === 'tagMenu') { refreshTagList(); document.getElementById('tagSearch').focus(); }
       if (m.id === 'presetMenu') renderPresets();
     }));
+
+    // ---- Per-tag colours: a stable hue from the tag name, so one subsystem always looks the same ----
+    const tagHues = new Map();
+    function tagColor(tag) {
+      let c = tagHues.get(tag);
+      if (c === undefined) {
+        // FNV-1a, then a golden-angle step: similar names (wifi / spi) still land far apart on the hue wheel.
+        let h = 2166136261;
+        for (let i = 0; i < tag.length; i++) h = Math.imul(h ^ tag.charCodeAt(i), 16777619) >>> 0;
+        c = 'hsl(' + Math.round((h % 1000) * 137.508 % 360) + ',55%,68%)';
+        tagHues.set(tag, c);
+      }
+      return c;
+    }
+
+    // ---- Filter query syntax: level:error tag:wifi text:timeout ----
+    // Only active when at least one key:value term is present; otherwise the box behaves as plain text.
+    const LEVEL_ALIASES = { e: 'error', error: 'error', w: 'warning', warn: 'warning', warning: 'warning',
+      i: 'info', info: 'info', d: 'debug', debug: 'debug', v: 'verbose', verbose: 'verbose',
+      elf: 'elf', tx: 'tx', plain: 'plain', other: 'plain', raw: 'plain' };
+
+    function parseQuery(text) {
+      const clauses = [], free = [];
+      const re = /"([^"]*)"|(\\S+)/g;
+      let m;
+      while ((m = re.exec(text))) {
+        if (m[1] !== undefined) { free.push(m[1].toLowerCase()); continue; }
+        const kv = /^(level|tag|text):(.+)$/i.exec(m[2]);
+        if (!kv) { free.push(m[2].toLowerCase()); continue; }
+        const key = kv[1].toLowerCase(), value = kv[2].toLowerCase();
+        if (key === 'level') {
+          const lv = LEVEL_ALIASES[value];
+          if (!lv) return { error: 'level: expects error, warning, info, debug, verbose, elf, tx or plain' };
+          clauses.push(e => (e.level || 'plain') === lv);
+        } else if (key === 'tag') {
+          clauses.push(e => { const p = parsedLine(e); return !!p && p.tag.toLowerCase().includes(value); });
+        } else {
+          clauses.push(e => (e.text || '').toLowerCase().includes(value));
+        }
+      }
+      if (!clauses.length) return null;
+      free.forEach(t => clauses.push(e => (e.text || '').toLowerCase().includes(t)));
+      return { fn: e => clauses.every(c => c(e)) };
+    }
+
+    function makeFilter(text, isRegex) {
+      if (!text) return { fn: null };
+      if (!isRegex) {
+        const q = parseQuery(text);
+        if (q && q.error) return { fn: null, error: q.error };
+        if (q) return { fn: q.fn, query: true };
+      }
+      const m = makeMatcher(text, isRegex);
+      return { fn: m.fn ? e => m.fn(e.text) : null, error: m.error };
+    }
+
+    // ---- Export: what is shown, everything this window buffered, or the hub history ----
+    function exportBuffer(scope) {
+      document.getElementById('exportMenu').open = false;
+      const conn = ensureConn(connId);
+      const rows = conn.logsBuffer.filter(e => scope === 'all' || shouldDisplayLog(e));
+      if (!rows.length) { alert('Nothing to export: no lines match.'); return; }
+      const nl = String.fromCharCode(10);
+      const body = rows.map(e => '[' + (e.time || '') + '] [' + (e.level || 'plain').toUpperCase() + '] ' + e.text).join(nl) + nl;
+      const url = URL.createObjectURL(new Blob([body], { type: 'application/octet-stream' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = scope === 'all' ? 'serial_console_buffer.log' : 'serial_console_filtered.log';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    // ---- Counters measured by this window (the hub keeps none) ----
+    function fmtBytes(n) {
+      if (n < 1024) return n + ' B';
+      return n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
+    }
+
+    // ---- Telemetry sparklines: numeric top-level fields, one sample each time the telemetry changed ----
+    const TEL_POINTS = 120;
+    function noteTelemetry(conn, tel) {
+      if (!tel || typeof tel !== 'object') return;
+      const sig = JSON.stringify(tel);
+      if (sig === conn.telLast) return;
+      conn.telLast = sig;
+      Object.keys(tel).forEach(k => {
+        if (typeof tel[k] !== 'number' || !isFinite(tel[k])) return;
+        const h = conn.telHist[k] || (conn.telHist[k] = []);
+        h.push(tel[k]);
+        if (h.length > TEL_POINTS) h.shift();
+      });
+    }
+
+    function sparkSvg(values) {
+      const w = 140, h = 28, lo = Math.min(...values), hi = Math.max(...values), span = hi - lo || 1;
+      const pts = values.map((v, i) => (values.length === 1 ? w : (i * w) / (values.length - 1)).toFixed(1) + ',' +
+        (h - 2 - ((v - lo) / span) * (h - 4)).toFixed(1)).join(' ');
+      return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="trend"><polyline fill="none" stroke="#00daf3" stroke-width="1.5" points="' + pts + '"/></svg>';
+    }
+
+    function renderSparks() {
+      const box = document.getElementById('telSpark');
+      const hist = ensureConn(connId).telHist;
+      const keys = Object.keys(hist).sort();
+      document.getElementById('telSparkEmpty').classList.toggle('hidden', keys.length > 0);
+      box.innerHTML = keys.map(k => {
+        const v = hist[k];
+        return '<div class="spark"><div class="mono text-[11px] text-brand-muted truncate" title="' + escapeHtml(k) + '">' + escapeHtml(k) +
+          '</div><div class="mono text-sm text-brand-text">' + escapeHtml(String(v[v.length - 1])) + '</div>' + sparkSvg(v) +
+          '<div class="mono text-[10px] text-brand-muted">min ' + escapeHtml(String(Math.min(...v))) + ' · max ' + escapeHtml(String(Math.max(...v))) + ' · ' + v.length + ' samples</div></div>';
+      }).join('');
+    }
 
     // ---- Device Actions menu ----
     function deviceAction(action) {
@@ -4116,6 +4250,7 @@ HTML_PAGE = """<!DOCTYPE html>
           body: JSON.stringify({ id, data: bytesToB64(Uint8Array.from(merged)) })
         });
         const out = await res.json();
+        if (out.ok) conn.txBytes += merged.length;
         if (!out.ok && term && id === connId) term.write(`\r\n\x1b[31m[terminal] ${out.error}\x1b[0m\r\n`);
       } catch (err) {
         console.error(err);
@@ -4173,6 +4308,7 @@ HTML_PAGE = """<!DOCTYPE html>
         });
         const out = await res.json();
         if (!out.ok) { alert('TX failed: ' + out.error); return; }
+        conn0().txBytes += out.bytes || 0;
         if (data && txHistory[txHistory.length - 1] !== data) txHistory.push(data);
         txHistoryPos = txHistory.length;
         input.value = '';
@@ -4305,6 +4441,7 @@ HTML_PAGE = """<!DOCTYPE html>
         conn.logsBuffer.push(event);
         adopt(conn, event);
         conn.lines++;
+        if ((conn.status.console_mode || 'control') === 'control') conn.rxBytes += (event.text || '').length + 1;  // raw events carry the bytes in linux mode
         trimBuffer(conn);
         // A paused connection keeps capturing; only drawing is frozen.
         if (!isPaused(conn)) {
@@ -4314,6 +4451,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
       } else if (event.type === 'raw') {
         const bytes = b64ToBytes(event.data);
+        conn.rxBytes += bytes.length;
         pushRaw(conn, bytes);
         if (isActive && term) term.write(bytes);
         if (jsRunning) jsFeed(id, new TextDecoder().decode(bytes, { stream: true }));
@@ -4395,6 +4533,7 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('logCountBadge').innerText = conn.logsBuffer.length;
       document.getElementById('eventCountBadge').innerText = conn.eventsBuffer.length;
       refreshTagList();
+      if (activeTab === 'inspector') renderSparks();
       syncPauseUi();
       applyLogFilter();
       conn.eventsBuffer.forEach(renderEventEntry);
@@ -4621,7 +4760,9 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('rtsStatus').innerText = `RTS: ${st.rts === null ? '--' : (st.rts ? 'HIGH' : 'LOW')}`;
       }
       if (st.telemetry) {
+        noteTelemetry(conn0(), st.telemetry);
         document.getElementById('inspectorContent').innerText = JSON.stringify(st.telemetry, null, 2);
+        if (activeTab === 'inspector') renderSparks();
       }
       document.getElementById('txTarget').textContent = connected && st.port ? (isSshPort(st.port) ? st.port.slice('ssh-socket://'.length) : st.port) : 'no connection';
       document.getElementById('txSendBtn').disabled = !connected;
