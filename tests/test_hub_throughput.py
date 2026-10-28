@@ -7,6 +7,7 @@ test exists so a regression shows up before anyone reaches for a rewrite.
 """
 
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -30,7 +31,8 @@ SECONDS = 3.0
 CLIENTS = 4
 
 
-@unittest.skipIf(pty is None, "needs a pseudo-terminal")
+@unittest.skipUnless(pty is not None and sys.platform.startswith("linux"),
+                     "needs a Linux pseudo-terminal (the hub cannot open a macOS pty)")
 class HubThroughputTest(unittest.TestCase):
     def test_every_client_gets_every_byte_at_five_times_uart_speed(self):
         master, slave = pty.openpty()

@@ -554,7 +554,12 @@ case "$verb" in
             systemd-run --quiet --collect --setenv=RESTART_ARG="$arg" \
                 /bin/sh -c "$RESTART_CMD" || fail "systemd-run failed"
         else
-            setsid /bin/sh -c "$RESTART_CMD" </dev/null >/dev/null 2>&1 &
+            # setsid(1) is missing on macOS: nohup keeps it alive after this session closes.
+            if command -v setsid >/dev/null 2>&1; then
+                setsid /bin/sh -c "$RESTART_CMD" </dev/null >/dev/null 2>&1 &
+            else
+                nohup /bin/sh -c "$RESTART_CMD" </dev/null >/dev/null 2>&1 &
+            fi
         fi
         echo "restart $arg"
         ;;

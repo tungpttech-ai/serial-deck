@@ -2,6 +2,7 @@
 
 import os
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -80,6 +81,7 @@ class FindPortByUsbTest(unittest.TestCase):
         with self.identities(table):
             self.assertIsNone(uart.find_port_by_usb("1a86:55d2", "AA", list(table), "00"))
 
+    @unittest.skipIf(os.name == "nt", "needs symlinks")
     def test_aliases_of_one_tty_count_once(self):
         with tempfile.TemporaryDirectory() as directory:
             real = Path(directory) / "ttyACM9"
@@ -91,6 +93,7 @@ class FindPortByUsbTest(unittest.TestCase):
             with self.identities(table):
                 self.assertEqual(uart.find_port_by_usb("303a:1001", "AA", list(table), "00"), str(real))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "sysfs paths (':' in names) are Linux only")
     def test_usb_identity_reads_the_nearest_interface_from_sysfs(self):
         with tempfile.TemporaryDirectory() as directory:
             usb = Path(directory) / "sys" / "usb1" / "1-2"
