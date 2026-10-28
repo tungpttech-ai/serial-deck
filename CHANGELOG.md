@@ -2,6 +2,16 @@
 
 ## 0.3.0 (2026-10-28)
 
+- Console-first dashboard (P0 of `SERIAL_DECK_UI_UX_SPEC.md`): one header row (port, baud,
+  mode, connection tabs, state), a slim FSM/target bar with a **Device Actions** menu
+  (Reset, Bootloader, DTR, RTS, with the real line state), and a status bar. Console gets
+  separate **Filter** (hides), **Find** (highlights, previous/next), tag filter fed by observed
+  tags, regex toggles with inline validation, labelled severity chips, **Raw / Structured**
+  display (unparsed lines are always shown whole), line details with JSON pretty-print and
+  copy, keyboard line selection, distinct **Pause** and **Follow** plus "Jump to latest",
+  a collapsible TX composer that keeps its draft, and connection state as icon plus text.
+  Rendering is batched per frame and bounded (20000 buffered lines per connection, 3000 drawn).
+  View mode and TX collapse persist in the browser. No protocol or device-control change.
 - Device profiles (`serial_deck/profiles.py`): JSON presets in
   `~/.config/serial-deck/profiles/` (`SERIAL_DECK_PROFILE_DIR`) that fill the SSH
   pairing form (hub action `ssh_profiles`) and give `serial-deck-web --profile` /

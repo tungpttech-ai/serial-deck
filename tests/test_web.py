@@ -212,6 +212,58 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ConsoleUxTest(unittest.TestCase):
+    """The console keeps every control it had; the redesign only moved and relabelled them."""
+
+    def test_device_actions_menu_keeps_every_line_control(self):
+        menu = HTML_PAGE.split('id="deviceActions"', 1)[1].split("</details>", 1)[0]
+        for action in ("reset", "bootloader", "toggle_dtr", "toggle_rts"):
+            self.assertIn(f"deviceAction('{action}')", menu)
+        self.assertIn('id="dtrStatus"', menu)  # real line state shown next to its toggle
+        self.assertIn('id="rtsStatus"', menu)
+        self.assertIn("controlLine(action)", HTML_PAGE)  # same /api/lines call as before
+
+    def test_filter_and_find_are_separate_and_regex_is_validated(self):
+        self.assertIn('id="logSearchInput"', HTML_PAGE)  # filter: hides lines
+        self.assertIn('id="findInput"', HTML_PAGE)  # find: highlights, hides nothing
+        self.assertIn('id="tagFilterInput"', HTML_PAGE)
+        self.assertIn("new RegExp(text, 'i')", HTML_PAGE)
+        self.assertIn('id="filterError"', HTML_PAGE)
+
+    def test_raw_and_structured_modes_never_drop_unparsed_lines(self):
+        self.assertIn("setViewMode('raw')", HTML_PAGE)
+        self.assertIn("setViewMode('structured')", HTML_PAGE)
+        # A line that is not "L (tick) tag: msg" is drawn whole, in both modes.
+        self.assertIn("escapeHtml(entry.text || '')", HTML_PAGE)
+
+    def test_pause_and_follow_are_distinct(self):
+        self.assertIn("function togglePause()", HTML_PAGE)
+        self.assertIn("function toggleAutoScroll()", HTML_PAGE)
+        self.assertIn('id="jumpLatest"', HTML_PAGE)  # obvious way back after scrolling up
+
+    def test_log_rendering_is_bounded(self):
+        self.assertIn("const BUFFER_MAX = 20000;", HTML_PAGE)
+        self.assertIn("const DOM_MAX = 3000;", HTML_PAGE)
+        self.assertIn("requestAnimationFrame(flushRows)", HTML_PAGE)
+
+    def test_collapsing_tx_keeps_the_draft(self):
+        body = HTML_PAGE.split("function applyTxCollapsed()", 1)[1].split("// ---- Device Actions", 1)[0]
+        self.assertNotIn(".value", body)  # only hides the row, never clears the input
+        self.assertIn('id="txInput"', HTML_PAGE)
+        self.assertIn("txHistoryKey(event)", HTML_PAGE)
+
+    def test_connection_state_is_text_and_icon_not_color_alone(self):
+        state = HTML_PAGE.split("function connState(conn)", 1)[1].split("function fmtBaud", 1)[0]
+        for text in ("Connecting…", "Reconnecting…", "Disconnected", "'Connected"):
+            self.assertIn(text, state)
+        self.assertEqual(state.count("icon:"), 6)  # every state carries an icon next to its text
+        self.assertEqual(HTML_PAGE.count('id="connLabel"'), 1)  # port and state are not repeated
+
+    def test_status_bar_uses_measured_values_only(self):
+        self.assertIn("c.rate = c.lines - c.lastLines", HTML_PAGE)  # a real counter
+        self.assertNotIn("Drops", HTML_PAGE.split('id="statusBar"', 1)[1].split("</div>", 1)[0])
+
+
 class SmallWindowLogLayoutTest(unittest.TestCase):
     """Shrinking the window made the log grow to every line instead of scrolling."""
 

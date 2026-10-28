@@ -1948,9 +1948,9 @@ HTML_PAGE = """<!DOCTYPE html>
     #appHeader h1 { overflow-wrap: anywhere; }
     #connectionControls { flex: 1 1 640px; min-width: 0; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     #connectionControls > * { margin-left: 0; }
-    #connectionForm { flex: 1 1 520px; min-width: 0; display: grid; gap: 8px; grid-template-columns: minmax(140px, 1fr) auto auto auto; }
+    #connectionForm { flex: 1 1 520px; min-width: 0; display: flex; align-items: center; gap: 8px; }
     #connectionForm > * { margin-left: 0; }
-    #portPicker { min-width: 0; flex-wrap: wrap; }
+    #portPicker { min-width: 0; flex: 1 1 auto; flex-wrap: wrap; }
     #portSelect { flex: 1 1 0; min-width: 0; width: 0; text-overflow: ellipsis; }
     #portPicker > button, #portPicker > i { flex-shrink: 0; }
     #netPortInput { flex: 1 0 100%; width: 100%; min-width: 0; margin: 6px 0 0; }
@@ -1967,13 +1967,6 @@ HTML_PAGE = """<!DOCTYPE html>
        pixels tall. Let it shrink and scroll inside the panel. */
     #logsPanePrimary, #logsPaneSplit, #logsPaneSplitContent { min-height: 0; min-width: 0; }
     #sidebarPanel { transition: width .15s ease, opacity .15s ease; min-width: 0; }
-    #consoleToolbar { flex-wrap: wrap; gap: 8px; }
-    #consoleTabs, #consoleFilters, #levelFilters { flex-wrap: wrap; gap: 4px; min-width: 0; }
-    #consoleTabs > *, #consoleFilters > *, #levelFilters > * { margin-left: 0; }
-    #consoleTabs button { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
-    #consoleFilters { flex: 1 1 100%; }
-    #consoleFilters > div:first-child { flex: 1 1 150px; min-width: 0; }
-    #logSearchInput { width: 100%; }
     #terminalToolbar, #terminalToolbar > div { flex-wrap: wrap; gap: 6px; }
     #terminalToolbar > div > * { margin-left: 0; }
     /* xterm sizes its screen in fixed pixels from cols x cell width. Without
@@ -1984,9 +1977,6 @@ HTML_PAGE = """<!DOCTYPE html>
     #terminalHost .xterm { position: absolute; inset: 4px; }
     #viewTerminal, #terminalToolbar, #consoleToolbar, #txBar { min-width: 0; max-width: 100%; }
     #consolePanel { min-width: 0; max-width: 100%; }
-    #txBar { flex-wrap: wrap; gap: 6px; }
-    #txBar > * { margin-left: 0; }
-    #txInput { flex: 1 1 180px; }
     #splitConnSelect { max-width: 100%; min-width: 0; }
     @media (min-width: 901px) {
       #sidebarPanel { max-width: 38%; }
@@ -2030,15 +2020,95 @@ HTML_PAGE = """<!DOCTYPE html>
       #appHeader { padding: 12px; }
       #appHeader > div:first-child > div:last-child { min-width: 0; }
       #appHeader > div:first-child > div:last-child > div { flex-wrap: wrap; gap: 4px; }
-      #connectionForm { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-      #portPicker, #connectBtn { grid-column: 1 / -1; }
+      #connectionForm { flex-wrap: wrap; }
+      #portPicker, #connectBtn { flex: 1 0 100%; }
       #connectBtn { justify-content: center; }
       #healthBar { padding: 8px 12px; }
       #telemetryPanel { padding: 12px; }
-      #consoleTabs button { font-size: 11px; }
-      #txInput { flex-basis: calc(100% - 32px); }
       #consolePanel { height: max(580px, 80vh); }
     }
+    #consoleToolbar, #consoleTabs, #consoleFilters, #consoleActions { min-width: 0; }
+    #txBody { flex-wrap: wrap; }
+    #txInput { flex: 1 1 180px; }
+    .tab-btn { font-size: 12px; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;
+      color: #bac9cc; border: 1px solid transparent; white-space: nowrap; transition: background .12s, color .12s; }
+    .tab-btn:hover { background: #1e2024; color: #e2e2e8; }
+    .tab-btn[aria-selected="true"] { background: #1e2024; color: #e2e2e8; border-color: #3b494c; }
+    .tab-count { font-size: 10px; background: #1a1c20; padding: 0 6px; border-radius: 9px; color: #bac9cc; }
+    .tb-btn { font-size: 12px; display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: #1e2024; border: 1px solid #3b494c;
+      border-radius: 6px; color: #e2e2e8; font-weight: 600; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
+    .tb-btn:hover { background: #3b494c; }
+    .tb-danger:hover { background: rgba(255,107,97,.2); color: #ff6b61; }
+    #pauseBtn[aria-pressed="true"] { background: rgba(255,183,120,.18); border-color: rgba(255,183,120,.6); color: #ffb778; }
+    #pauseScrollBtn[aria-pressed="true"] { color: #00e5ff; border-color: rgba(0,229,255,.5); }
+    #pauseScrollBtn[aria-pressed="false"] { color: #bac9cc; }
+    .tb-group { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; background: #1e2024; border: 1px solid #3b494c; border-radius: 6px; min-width: 0; }
+    .tb-group:focus-within { border-color: #00e5ff; box-shadow: 0 0 0 1px #00e5ff; }
+    .tb-group.invalid { border-color: #ff6b61; box-shadow: 0 0 0 1px #ff6b61; }
+    .tb-input { background: transparent; padding: 3px 4px; color: #e2e2e8; min-width: 0; }
+    .tb-input:focus-visible { outline: none; }
+    .tb-toggle { padding: 1px 6px; border-radius: 4px; color: #849396; font-size: 11px; }
+    .tb-toggle:hover { color: #e2e2e8; background: #3b494c; }
+    .tb-toggle[aria-pressed="true"] { color: #00e5ff; background: rgba(0,229,255,.16); }
+    .chip { padding: 2px 8px; border-radius: 4px; border: 1px dashed #3b494c; color: #849396; background: transparent;
+      font-weight: 700; text-decoration: line-through; text-decoration-color: rgba(132,147,150,.6); }
+    .chip:hover { color: #e2e2e8; }
+    .chip[aria-pressed="true"] { border-style: solid; text-decoration: none; }
+    .chip[aria-pressed="true"]::before { content: "✓ "; font-weight: 400; }
+    .chip-E[aria-pressed="true"] { color: #ff6b61; background: rgba(255,107,97,.16); border-color: rgba(255,107,97,.5); }
+    .chip-W[aria-pressed="true"] { color: #ffb778; background: rgba(255,183,120,.16); border-color: rgba(255,183,120,.5); }
+    .chip-I[aria-pressed="true"] { color: #22ef7e; background: rgba(34,239,126,.12); border-color: rgba(34,239,126,.4); }
+    .chip-D[aria-pressed="true"] { color: #8fd8ff; background: rgba(143,216,255,.12); border-color: rgba(143,216,255,.4); }
+    .chip-V[aria-pressed="true"] { color: #bac9cc; background: rgba(186,201,204,.12); border-color: rgba(186,201,204,.4); }
+    .chip-elf[aria-pressed="true"] { color: #00daf3; background: rgba(0,218,243,.12); border-color: rgba(0,218,243,.4); }
+    .chip-tx[aria-pressed="true"] { color: #ff8fd8; background: rgba(255,143,216,.12); border-color: rgba(255,143,216,.4); }
+    .chip-plain[aria-pressed="true"] { color: #e2e2e8; background: rgba(226,226,232,.1); border-color: #849396; }
+    .seg { display: flex; border: 1px solid #3b494c; border-radius: 6px; overflow: hidden; }
+    .seg button { padding: 3px 10px; color: #bac9cc; background: #1e2024; font-weight: 600; }
+    .seg button + button { border-left: 1px solid #3b494c; }
+    .seg button[aria-pressed="true"] { background: #3b494c; color: #fff; }
+    /* Log rows. A parsed ESP-IDF line is a grid (time | level | tag | message); everything else is one full-width row. */
+    .log-pane:focus-visible { outline-offset: -2px; }
+    /* Off-screen rows skip layout: the cost of a flush no longer grows with the 3000 drawn rows. */
+    .log-row { content-visibility: auto; contain-intrinsic-size: auto 20px; contain: layout style; padding: 1px 4px; border-radius: 3px; border-left: 2px solid transparent; outline: none; }
+    .log-row:hover { background: rgba(255,255,255,.04); }
+    .log-row.sel { background: rgba(0,229,255,.09); border-left-color: #00e5ff; }
+    .log-row.find-hit { background: rgba(255,183,120,.14); }
+    .log-row.find-cur { background: rgba(255,183,120,.34); }
+    .log-row .lr-line { display: flex; gap: .6rem; align-items: flex-start; }
+    .log-row.struct .lr-line { display: grid; grid-template-columns: 5.6rem 1rem 11rem minmax(0, 1fr); column-gap: .6rem; }
+    .lr-time { color: #849396; font-size: 10px; width: 5.6rem; flex-shrink: 0; user-select: none; }
+    .lr-lvl { font-weight: 700; text-align: center; }
+    .lr-tag { color: #7fc6d1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lr-msg { color: #e2e2e8; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; flex: 1 1 0; }
+    .lv-error, .m-error { color: #ff6b61; }
+    .lv-warning, .m-warning { color: #ffb778; }
+    .lv-info { color: #22ef7e; }
+    .lv-debug { color: #8fd8ff; }
+    .m-debug { color: #a9c3cf; }
+    .lv-verbose, .m-verbose { color: #849396; }
+    .rawl .m-info { color: #22ef7e; }
+    .rawl .m-debug { color: #8fd8ff; }
+    .rawl .m-verbose { color: #bac9cc; }
+    .m-elf { color: #00daf3; }
+    .m-tx { color: #ff8fd8; }
+    .lr-detail { margin: 4px 0 4px 6.2rem; padding: 6px 8px; background: #111318; border: 1px solid #3b494c; border-radius: 4px; user-select: text; }
+    .lr-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; color: #e2e2e8; }
+    .lr-detail .lr-json { color: #00daf3; }
+    .lr-detail .lr-meta { color: #849396; margin-bottom: 4px; }
+    .lr-detail button { padding: 1px 8px; margin-right: 6px; border: 1px solid #3b494c; border-radius: 4px; color: #bac9cc; background: #1e2024; }
+    .lr-detail button:hover { color: #00e5ff; border-color: #00e5ff; }
+    /* Device Actions menu */
+    #deviceActions > summary { list-style: none; }
+    #deviceActions > summary::-webkit-details-marker { display: none; }
+    #deviceActions[open] > summary { background: #3b494c; }
+    .da-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 3px; text-align: left; color: #e2e2e8; background: transparent; }
+    .da-item:hover { background: #3b494c; }
+    .da-item i { width: 14px; text-align: center; color: #849396; }
+    .da-item .da-note { margin-left: auto; font-size: 10px; color: #849396; }
+    .da-item:disabled { opacity: .4; cursor: not-allowed; }
+    .da-danger:hover { background: rgba(255,107,97,.18); color: #ff6b61; }
+    #deviceActions > summary:focus-visible { outline: 2px solid #00e5ff; outline-offset: 2px; }
   </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden select-none">
@@ -2058,6 +2128,14 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="flex items-center space-x-2">
       <h1 class="text-sm font-bold tracking-wide text-brand-text" title="Shared serial console, device control and ESP32 flashing">SERIAL DECK</h1>
       <span id="transportBadge" class="text-[10px] bg-brand-surfaceAlt text-brand-accent px-1.5 py-0.5 rounded border border-brand-border mono font-semibold">UART</span>
+    </div>
+
+    <!-- CONNECTION TABS: several physical UARTs can be watched at once -->
+    <div id="connTabsBar" class="flex items-center space-x-1.5 min-w-0 shrink text-xs">
+      <div id="connTabs" class="flex items-center space-x-1.5 overflow-x-auto" role="tablist" aria-label="Connections"></div>
+      <button onclick="addConnection()" title="Open another UART connection" aria-label="Open another UART connection" class="shrink-0 px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded-lg text-brand-muted hover:text-brand-accent transition">
+        <i class="fa-solid fa-plus"></i>
+      </button>
     </div>
 
     <!-- Connection & Modem Controls -->
@@ -2110,58 +2188,43 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
 
       <!-- Live Connection Pill -->
-      <div id="connectionStatus" class="flex items-center bg-brand-surfaceAlt border border-brand-border rounded-lg px-3 py-1.5 space-x-2 text-xs font-medium">
-        <span id="connDot" class="w-2.5 h-2.5 rounded-full bg-brand-danger animate-pulse"></span>
+      <div id="connectionStatus" role="status" aria-live="polite" class="flex items-center bg-brand-surfaceAlt border border-brand-border rounded-lg px-2.5 py-1 space-x-1.5 text-xs font-medium">
+        <i id="connDot" class="fa-solid fa-circle-xmark text-brand-danger" aria-hidden="true"></i>
         <span id="connLabel" class="mono text-brand-muted">Disconnected</span>
         <button id="linkFixBtn" onclick="linkFix()" class="hidden ml-1 px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px] font-semibold"></button>
       </div>
     </div>
   </header>
 
-  <!-- CONNECTION TABS: several physical UARTs can be watched at once -->
-  <section id="connTabsBar" class="bg-brand-surfaceAlt/40 border-b border-brand-border px-5 py-1.5 flex items-center space-x-2 shrink-0 text-xs">
-    <span class="text-brand-muted uppercase font-bold tracking-wider text-[10px] shrink-0">Connections:</span>
-    <div id="connTabs" class="flex items-center space-x-1.5 overflow-x-auto"></div>
-    <button onclick="addConnection()" title="Open another UART connection" class="shrink-0 px-2 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded-lg text-brand-muted hover:text-brand-accent transition">
-      <i class="fa-solid fa-plus"></i>
-    </button>
-  </section>
-
-  <!-- TELEMETRY / HEALTH BAR -->
-  <section id="healthBar" class="bg-brand-surfaceAlt/60 border-b border-brand-border px-5 py-2 flex items-center justify-between shrink-0 text-xs mono">
-    <div class="flex items-center space-x-6">
+  <!-- DEVICE BAR: FSM / target plus the Device Actions menu -->
+  <section id="healthBar" class="bg-brand-surfaceAlt/60 border-b border-brand-border px-4 py-1 flex items-center justify-between shrink-0 text-xs mono">
+    <div class="flex items-center space-x-5 min-w-0">
       <div class="flex items-center space-x-2">
-        <span class="text-brand-muted uppercase font-bold tracking-wider">FSM:</span>
+        <span class="text-brand-muted uppercase font-bold tracking-wider">FSM</span>
         <span id="fsmBadge" class="px-2 py-0.5 rounded bg-brand-surface border border-brand-border text-brand-accent font-bold">UNKNOWN</span>
       </div>
-      <div class="flex items-center space-x-2">
-        <span class="text-brand-muted uppercase font-bold tracking-wider">Target:</span>
+      <div class="flex items-center space-x-2 min-w-0">
+        <span class="text-brand-muted uppercase font-bold tracking-wider">Target</span>
         <span id="deviceBadge" class="text-brand-text">Not Connected</span>
-      </div>
-      <div class="flex items-center space-x-2">
-        <span class="text-brand-muted uppercase font-bold tracking-wider">Lines:</span>
-        <span id="dtrStatus" class="px-1.5 py-0.5 rounded bg-brand-surface text-brand-muted border border-brand-border">DTR: --</span>
-        <span id="rtsStatus" class="px-1.5 py-0.5 rounded bg-brand-surface text-brand-muted border border-brand-border">RTS: --</span>
       </div>
     </div>
 
-    <!-- Hardware Quick Actions -->
-    <div class="flex items-center space-x-2">
-      <button onclick="controlLine('reset')" class="px-2.5 py-1 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-brand-text transition flex items-center space-x-1">
-        <i class="fa-solid fa-arrows-rotate text-xs"></i>
-        <span>Reset</span>
-      </button>
-      <button onclick="controlLine('bootloader')" class="px-2.5 py-1 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-brand-text transition flex items-center space-x-1">
-        <i class="fa-solid fa-download text-xs"></i>
-        <span>Bootloader</span>
-      </button>
-      <button onclick="controlLine('toggle_dtr')" class="px-2 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-muted transition">DTR</button>
-      <button onclick="controlLine('toggle_rts')" class="px-2 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-muted transition">RTS</button>
-    </div>
+    <details id="deviceActions" class="relative">
+      <summary class="list-none cursor-pointer select-none px-2.5 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text flex items-center space-x-1.5" title="Reset, bootloader and the DTR / RTS lines">
+        <i class="fa-solid fa-sliders text-[10px]" aria-hidden="true"></i><span>Device Actions</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+      </summary>
+      <div class="absolute right-0 top-full mt-1 z-30 w-60 p-1 bg-brand-surface border border-brand-border rounded shadow-lg" style="box-shadow:0 8px 24px rgba(0,0,0,.5)!important" role="menu">
+        <button role="menuitem" onclick="deviceAction('reset')" class="da-item" title="Pulse the reset line (EN / RTS)"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i><span>Reset</span></button>
+        <button role="menuitem" onclick="deviceAction('bootloader')" class="da-item da-danger" title="Reboot into the ROM download mode; the running firmware stops"><i class="fa-solid fa-download" aria-hidden="true"></i><span>Bootloader</span><span class="da-note">stops firmware</span></button>
+        <div class="border-t border-brand-border my-1"></div>
+        <button role="menuitem" onclick="deviceAction('toggle_dtr')" class="da-item" title="Toggle the DTR line (wired to GPIO0 on most ESP boards)"><i class="fa-solid fa-right-left" aria-hidden="true"></i><span>Toggle DTR</span><span id="dtrStatus" class="da-note">DTR: --</span></button>
+        <button role="menuitem" onclick="deviceAction('toggle_rts')" class="da-item" title="Toggle the RTS line (wired to EN / reset on most ESP boards)"><i class="fa-solid fa-right-left" aria-hidden="true"></i><span>Toggle RTS</span><span id="rtsStatus" class="da-note">RTS: --</span></button>
+      </div>
+    </details>
   </section>
 
   <!-- MAIN DUAL-PANE BODY -->
-  <main id="telemetryPanel" class="flex-1 flex overflow-hidden p-4">
+  <main id="telemetryPanel" class="flex-1 flex overflow-hidden p-2">
 
     <!-- LEFT SIDEBAR: CONTROLS & FLASH -->
     <aside id="sidebarPanel" class="collapsed flex flex-col space-y-4 shrink-0 overflow-y-auto pr-1" style="width: 384px;">
@@ -2341,79 +2404,102 @@ HTML_PAGE = """<!DOCTYPE html>
     <section id="consolePanel" class="flex-1 flex flex-col glass-card overflow-hidden min-w-0">
 
       <!-- Tab Header & Filter Toolbar -->
-      <div id="consoleToolbar" class="bg-brand-surfaceAlt/80 border-b border-brand-border p-2.5 flex items-center justify-between shrink-0">
-        <!-- Tabs -->
-        <div id="consoleTabs" class="flex items-center space-x-1">
-          <button id="tabLogsBtn" onclick="switchTab('logs')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-brand-surface text-brand-text border border-brand-border transition flex items-center space-x-1.5">
-            <i class="fa-solid fa-terminal text-brand-accent"></i>
-            <span>Console Stream</span>
-            <span id="logCountBadge" class="text-[10px] bg-brand-surfaceAlt px-1.5 py-0.2 rounded-full text-brand-muted">0</span>
-          </button>
-          <button id="tabEventsBtn" onclick="switchTab('events')" class="px-3 py-1.5 rounded-lg text-xs font-bold text-brand-muted hover:text-brand-text hover:bg-brand-surface transition flex items-center space-x-1.5">
-            <i class="fa-solid fa-network-wired text-brand-cyan"></i>
-            <span>Control Events</span>
-            <span id="eventCountBadge" class="text-[10px] bg-brand-surfaceAlt px-1.5 py-0.2 rounded-full text-brand-muted">0</span>
-          </button>
-          <button id="tabTerminalBtn" onclick="switchTab('terminal')" class="px-3 py-1.5 rounded-lg text-xs font-bold text-brand-muted hover:text-brand-text hover:bg-brand-surface transition flex items-center space-x-1.5">
-            <i class="fa-solid fa-keyboard text-brand-tx"></i>
-            <span>Terminal</span>
-          </button>
-          <button id="tabInspectorBtn" onclick="switchTab('inspector')" class="px-3 py-1.5 rounded-lg text-xs font-bold text-brand-muted hover:text-brand-text hover:bg-brand-surface transition flex items-center space-x-1.5">
-            <i class="fa-solid fa-cube text-brand-purple"></i>
-            <span>Telemetry Inspector</span>
-          </button>
+      <div id="consoleToolbar" class="bg-brand-surfaceAlt/80 border-b border-brand-border px-2 py-1.5 flex flex-col gap-1.5 shrink-0">
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div id="consoleTabs" class="flex items-center gap-1 flex-wrap" role="tablist" aria-label="Console views">
+            <button id="tabLogsBtn" class="tab-btn" role="tab" aria-selected="true" onclick="switchTab('logs')">
+              <i class="fa-solid fa-terminal text-brand-accent" aria-hidden="true"></i><span>Console</span>
+              <span id="logCountBadge" class="tab-count">0</span>
+            </button>
+            <button id="tabEventsBtn" class="tab-btn" role="tab" aria-selected="false" onclick="switchTab('events')" title="Control-protocol frames">
+              <i class="fa-solid fa-network-wired text-brand-cyan" aria-hidden="true"></i><span>Events</span>
+              <span id="eventCountBadge" class="tab-count">0</span>
+            </button>
+            <button id="tabInspectorBtn" class="tab-btn" role="tab" aria-selected="false" onclick="switchTab('inspector')" title="Parsed telemetry and JSON snapshot">
+              <i class="fa-solid fa-cube text-brand-purple" aria-hidden="true"></i><span>Telemetry</span>
+            </button>
+            <button id="tabTerminalBtn" class="tab-btn" role="tab" aria-selected="false" onclick="switchTab('terminal')">
+              <i class="fa-solid fa-keyboard text-brand-tx" aria-hidden="true"></i><span>Terminal</span>
+            </button>
+          </div>
+          <div id="consoleActions" class="flex items-center gap-1">
+            <button id="splitViewBtn" onclick="toggleSplitView()" title="Split console: watch a second connection side by side" aria-label="Split console" class="tb-btn">
+              <i class="fa-solid fa-table-columns" aria-hidden="true"></i><span class="hidden xl:inline">Split</span>
+            </button>
+            <button onclick="exportLogs()" title="Export the hub's log history (last 2000 lines) as a file" aria-label="Export logs" class="tb-btn">
+              <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i><span class="hidden xl:inline">Export</span>
+            </button>
+            <button onclick="clearCurrentLogs()" title="Clear this view (the hub keeps its own history, which Export uses)" aria-label="Clear view" class="tb-btn tb-danger">
+              <i class="fa-solid fa-trash-can" aria-hidden="true"></i><span class="hidden xl:inline">Clear</span>
+            </button>
+          </div>
         </div>
 
-        <!-- Filter & Search Controls -->
-        <div id="consoleFilters" class="flex items-center space-x-2 text-xs">
-          <!-- Search Box -->
-          <div class="relative">
-            <i class="fa-solid fa-filter absolute left-2.5 top-2 text-brand-muted text-[10px]"></i>
-            <input id="logSearchInput" oninput="applyLogFilter()" type="text" placeholder="Filter regex / text..." class="pl-7 pr-3 py-1 bg-brand-surface border border-brand-border rounded-lg text-xs mono text-brand-text focus:outline-none focus:border-brand-accent w-44">
+        <!-- Filter (hides lines) / Find (highlights lines) / level chips / view mode / Pause / Follow -->
+        <div id="consoleFilters" class="flex items-center gap-1.5 flex-wrap text-xs">
+          <div id="filterGroup" class="tb-group" title="Filter: lines that do not match are hidden (they stay buffered)">
+            <i class="fa-solid fa-filter text-[10px] text-brand-muted" aria-hidden="true"></i>
+            <input id="logSearchInput" oninput="onFilterInput()" type="text" autocomplete="off" spellcheck="false" aria-label="Filter lines" placeholder="Filter lines…" class="tb-input mono w-40">
+            <button id="filterRegexBtn" type="button" class="tb-toggle mono" aria-pressed="false" aria-label="Filter: treat as regular expression" title="Regular expression" onclick="toggleRegex('filter')">.*</button>
+          </div>
+          <span id="filterError" class="hidden text-brand-danger text-[11px] mono max-w-[16rem] truncate" role="alert"></span>
+
+          <div id="findGroup" class="tb-group" title="Find: highlights matches in the lines shown; nothing is hidden">
+            <i class="fa-solid fa-magnifying-glass text-[10px] text-brand-muted" aria-hidden="true"></i>
+            <input id="findInput" oninput="onFindInput()" onkeydown="findKey(event)" type="text" autocomplete="off" spellcheck="false" aria-label="Find in shown lines" placeholder="Find in view…" class="tb-input mono w-32">
+            <button id="findRegexBtn" type="button" class="tb-toggle mono" aria-pressed="false" aria-label="Find: treat as regular expression" title="Regular expression" onclick="toggleRegex('find')">.*</button>
+            <span id="findCount" class="mono text-[10px] text-brand-muted min-w-[2.5rem] text-center" aria-live="polite">0/0</span>
+            <button type="button" class="tb-toggle" aria-label="Previous match" title="Previous match (Shift+Enter)" onclick="findStep(-1)"><i class="fa-solid fa-chevron-up" aria-hidden="true"></i></button>
+            <button type="button" class="tb-toggle" aria-label="Next match" title="Next match (Enter)" onclick="findStep(1)"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>
           </div>
 
-          <!-- Log Level Filters -->
-          <div id="levelFilters" class="flex items-center bg-brand-surface border border-brand-border rounded-lg p-0.5 space-x-0.5 text-[11px] font-bold mono">
-            <button onclick="toggleLevelFilter('E')" id="lvl-E" class="px-2 py-0.5 rounded bg-brand-danger/20 text-brand-danger border border-brand-danger/40">E</button>
-            <button onclick="toggleLevelFilter('W')" id="lvl-W" class="px-2 py-0.5 rounded bg-brand-warning/20 text-brand-warning border border-brand-warning/40">W</button>
-            <button onclick="toggleLevelFilter('I')" id="lvl-I" class="px-2 py-0.5 rounded bg-brand-success/20 text-brand-success border border-brand-success/40">I</button>
-            <button onclick="toggleLevelFilter('D')" id="lvl-D" class="px-2 py-0.5 rounded bg-brand-blue/20 text-brand-blue border border-brand-blue/40">D</button>
-            <button onclick="toggleLevelFilter('V')" id="lvl-V" class="px-2 py-0.5 rounded text-brand-muted hover:text-brand-text">V</button>
-            <button onclick="toggleLevelFilter('elf')" id="lvl-elf" class="px-2 py-0.5 rounded bg-brand-cyan/20 text-brand-cyan border border-brand-cyan/40">ELF</button>
-            <button onclick="toggleLevelFilter('tx')" id="lvl-tx" class="px-2 py-0.5 rounded bg-brand-tx/20 text-brand-tx border border-brand-tx/40">TX</button>
-            <button onclick="toggleLevelFilter('plain')" id="lvl-plain" class="px-2 py-0.5 rounded bg-brand-surfaceAlt text-brand-text border border-brand-border">RAW</button>
+          <div class="tb-group" title="Show only lines whose tag contains this text (tags seen so far are suggested)">
+            <i class="fa-solid fa-tag text-[10px] text-brand-muted" aria-hidden="true"></i>
+            <input id="tagFilterInput" list="tagList" oninput="onFilterInput()" type="text" autocomplete="off" spellcheck="false" aria-label="Filter by tag" placeholder="Tag…" class="tb-input mono w-28">
+            <datalist id="tagList"></datalist>
           </div>
 
-          <!-- Actions -->
-          <button id="pauseScrollBtn" onclick="toggleAutoScroll()" title="Toggle Auto-Scroll" class="px-2.5 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded-lg text-brand-text transition flex items-center space-x-1">
-            <i class="fa-solid fa-arrows-up-down text-xs text-brand-accent"></i>
-            <span id="scrollStateLabel">Follow</span>
+          <div id="levelFilters" role="group" aria-label="Severity filters" class="flex items-center gap-1 mono text-[11px]">
+            <button onclick="toggleLevelFilter('E')" id="lvl-E" class="chip chip-E" aria-pressed="true" title="Errors">E</button>
+            <button onclick="toggleLevelFilter('W')" id="lvl-W" class="chip chip-W" aria-pressed="true" title="Warnings">W</button>
+            <button onclick="toggleLevelFilter('I')" id="lvl-I" class="chip chip-I" aria-pressed="true" title="Info">I</button>
+            <button onclick="toggleLevelFilter('D')" id="lvl-D" class="chip chip-D" aria-pressed="true" title="Debug">D</button>
+            <button onclick="toggleLevelFilter('V')" id="lvl-V" class="chip chip-V" aria-pressed="false" title="Verbose">V</button>
+            <button onclick="toggleLevelFilter('elf')" id="lvl-elf" class="chip chip-elf" aria-pressed="true" title="Symbolized backtrace lines">ELF</button>
+            <button onclick="toggleLevelFilter('tx')" id="lvl-tx" class="chip chip-tx" aria-pressed="true" title="Echo of what you sent">TX</button>
+            <button onclick="toggleLevelFilter('plain')" id="lvl-plain" class="chip chip-plain" aria-pressed="true" title="Lines without an ESP-IDF level: ROM boot text, shell output, backtraces, anything else">Other</button>
+          </div>
+
+          <div class="seg" role="group" aria-label="Display mode">
+            <button id="viewRawBtn" type="button" aria-pressed="false" onclick="setViewMode('raw')" title="Every line exactly as received">Raw</button>
+            <button id="viewStructBtn" type="button" aria-pressed="true" onclick="setViewMode('structured')" title="ESP-IDF lines split into time, level, tag and message; other lines stay raw">Structured</button>
+          </div>
+
+          <button id="pauseBtn" type="button" aria-pressed="false" onclick="togglePause()" class="tb-btn" title="Pause: freeze the lines shown. Capture keeps running; resume shows everything.">
+            <i class="fa-solid fa-pause" aria-hidden="true"></i><span id="pauseLabel">Pause</span>
           </button>
-          <button id="splitViewBtn" onclick="toggleSplitView()" title="Split console: watch a second connection side by side" class="px-2.5 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded-lg text-brand-muted hover:text-brand-text transition">
-            <i class="fa-solid fa-table-columns"></i>
-          </button>
-          <button onclick="exportLogs()" title="Export logs as file" class="px-2.5 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded-lg text-brand-muted hover:text-brand-text transition">
-            <i class="fa-solid fa-file-arrow-down"></i>
-          </button>
-          <button onclick="clearCurrentLogs()" title="Clear view" class="px-2.5 py-1 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded-lg text-brand-muted transition">
-            <i class="fa-solid fa-trash-can"></i>
+          <button id="pauseScrollBtn" type="button" aria-pressed="true" onclick="toggleAutoScroll()" class="tb-btn" title="Follow: keep the newest line in view. Scrolling up turns it off.">
+            <i class="fa-solid fa-arrows-up-down" aria-hidden="true"></i><span id="scrollStateLabel">Follow</span>
           </button>
         </div>
       </div>
 
       <!-- VIEW 1: CONSOLE LOG STREAM (optionally split to watch a 2nd connection) -->
-      <div id="viewLogs" class="flex-1 flex overflow-hidden">
-        <div id="logsPanePrimary" class="flex-1 overflow-y-auto p-3 mono text-xs leading-relaxed space-y-0.5 select-text bg-[#0c0e12]"></div>
+      <div id="viewLogs" class="flex-1 flex overflow-hidden relative">
+        <div id="logsPanePrimary" role="log" aria-label="Console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-[#0c0e12]"></div>
         <div id="logsPaneSplit" class="hidden flex-1 flex-col overflow-hidden border-l border-brand-border">
           <div class="flex items-center justify-between px-2 py-1.5 bg-brand-surfaceAlt/60 border-b border-brand-border text-[11px] shrink-0">
-            <select id="splitConnSelect" onchange="onSplitConnChange(this.value)" class="bg-transparent text-brand-text mono text-[11px] focus:outline-none cursor-pointer"></select>
+            <select id="splitConnSelect" aria-label="Connection shown in the split pane" onchange="onSplitConnChange(this.value)" class="bg-transparent text-brand-text mono text-[11px] focus:outline-none cursor-pointer"></select>
             <div class="flex items-center space-x-2">
-              <button onclick="clearSplitLogs()" title="Clear this pane" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
-              <button onclick="toggleSplitView()" title="Close split view" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-xmark"></i></button>
+              <button onclick="clearSplitLogs()" title="Clear this pane" aria-label="Clear this pane" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
+              <button onclick="toggleSplitView()" title="Close split view" aria-label="Close split view" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-xmark"></i></button>
             </div>
           </div>
-          <div id="logsPaneSplitContent" class="flex-1 overflow-y-auto p-3 mono text-xs leading-relaxed space-y-0.5 select-text bg-[#0c0e12]"></div>
+          <div id="logsPaneSplitContent" role="log" aria-label="Split console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-[#0c0e12]"></div>
         </div>
+        <button id="jumpLatest" type="button" onclick="setFollow(true)" class="hidden absolute right-4 bottom-3 z-10 tb-btn" style="background:#00e5ff;color:#00363d;border-color:#00e5ff" title="Resume following the newest line">
+          <i class="fa-solid fa-arrow-down" aria-hidden="true"></i><span>Jump to latest</span>
+        </button>
       </div>
 
       <!-- VIEW 2: CONTROL EVENTS -->
@@ -2444,25 +2530,42 @@ HTML_PAGE = """<!DOCTYPE html>
         <pre id="inspectorContent" class="mono text-xs bg-brand-surface border border-brand-border p-4 rounded-xl text-brand-cyan overflow-x-auto">{}</pre>
       </div>
 
-      <!-- TX BAR: raw bytes to the active connection's UART -->
-      <form id="txBar" onsubmit="sendTx(event)" class="shrink-0 flex items-center space-x-2 p-2 bg-brand-surfaceAlt/80 border-t border-brand-border text-xs">
-        <span class="font-bold mono text-brand-tx select-none">TX</span>
-        <input id="txInput" onkeydown="txHistoryKey(event)" type="text" autocomplete="off" spellcheck="false" placeholder="Type data to send, Enter to transmit (↑/↓ history)" class="flex-1 min-w-0 px-2 py-1 bg-brand-surface border border-brand-border rounded-lg mono text-brand-text focus:outline-none focus:border-brand-tx">
-        <select id="txMode" title="Payload format" class="bg-brand-surface text-brand-text mono border border-brand-border rounded px-1.5 py-1 focus:outline-none">
-          <option value="ascii" selected>ASCII</option>
-          <option value="hex">HEX</option>
-        </select>
-        <select id="txLineEnding" title="Line ending appended" class="bg-brand-surface text-brand-text mono border border-brand-border rounded px-1.5 py-1 focus:outline-none">
-          <option value="none">None</option>
-          <option value="lf" selected>LF</option>
-          <option value="cr">CR</option>
-          <option value="crlf">CRLF</option>
-        </select>
-        <button type="submit" class="px-3 py-1 rounded-lg font-bold bg-brand-tx/20 text-brand-tx border border-brand-tx/40 hover:bg-brand-tx/30 transition flex items-center space-x-1.5">
-          <i class="fa-solid fa-paper-plane text-[10px]"></i>
-          <span>Send</span>
-        </button>
+      <!-- TX BAR: raw bytes to the active connection's UART. Collapsing keeps the draft. -->
+      <form id="txBar" onsubmit="sendTx(event)" class="shrink-0 border-t border-brand-border bg-brand-surfaceAlt/80 text-xs">
+        <div class="flex items-center gap-2 px-2 py-1">
+          <button type="button" id="txToggle" onclick="toggleTx()" aria-expanded="true" aria-controls="txBody" title="Collapse or expand the TX composer (your draft is kept)" class="flex items-center gap-1.5 font-bold mono text-brand-tx">
+            <i id="txChevron" class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i><span>TX</span>
+          </button>
+          <span id="txTarget" class="mono text-brand-muted truncate max-w-[14rem]" title="The connection TX is sent to">no connection</span>
+          <div id="txBody" class="flex items-center gap-2 flex-1 min-w-0">
+            <input id="txInput" onkeydown="txHistoryKey(event)" type="text" autocomplete="off" spellcheck="false" aria-label="Data to transmit" placeholder="Type data to send, Enter to transmit (↑/↓ history)" class="flex-1 min-w-0 px-2 py-1 bg-brand-surface border border-brand-border rounded-lg mono text-brand-text focus:outline-none focus:border-brand-tx">
+            <select id="txMode" title="Payload format" aria-label="Payload format" class="bg-brand-surface text-brand-text mono border border-brand-border rounded px-1.5 py-1 focus:outline-none">
+              <option value="ascii" selected>ASCII</option>
+              <option value="hex">HEX</option>
+            </select>
+            <select id="txLineEnding" title="Line ending appended" aria-label="Line ending" class="bg-brand-surface text-brand-text mono border border-brand-border rounded px-1.5 py-1 focus:outline-none">
+              <option value="none">None</option>
+              <option value="lf" selected>LF</option>
+              <option value="cr">CR</option>
+              <option value="crlf">CRLF</option>
+            </select>
+            <button id="txSendBtn" type="submit" class="px-3 py-1 rounded-lg font-bold bg-brand-tx/20 text-brand-tx border border-brand-tx/40 hover:bg-brand-tx/30 transition flex items-center space-x-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+              <i class="fa-solid fa-paper-plane text-[10px]" aria-hidden="true"></i>
+              <span>Send</span>
+            </button>
+          </div>
+        </div>
       </form>
+
+      <!-- STATUS BAR: measured values only; unknown values are shown as -- or left out -->
+      <div id="statusBar" role="status" class="shrink-0 flex items-center gap-x-4 gap-y-0.5 flex-wrap px-3 py-0.5 border-t border-brand-border bg-brand-bg text-[11px] mono text-brand-muted">
+        <span id="sbConn" class="flex items-center gap-1.5"></span>
+        <span id="sbFollow"></span>
+        <span id="sbRate" title="Measured from what this window received in the last second">RX --</span>
+        <span id="sbLines"></span>
+        <span id="sbTrim" class="hidden text-brand-warning" title="Oldest lines dropped from this window's buffer (limit 20000). The hub keeps its own history."></span>
+        <span class="ml-auto hidden lg:inline">Click a line · Enter details · C copy line</span>
+      </div>
 
     </section>
 
@@ -2712,7 +2815,8 @@ HTML_PAGE = """<!DOCTYPE html>
     function ensureConn(id) {
       if (!conns[id]) {
         conns[id] = { logsBuffer: [], eventsBuffer: [], rawChunks: [], rawBytes: 0, status: {}, eventSource: null,
-          termPending: [], termSending: false };
+          termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Set(), trimmed: 0,
+          lines: 0, lastLines: 0, rate: 0, connecting: false, error: false };
         if (!connOrder.includes(id)) connOrder.push(id);
       }
       return conns[id];
@@ -2765,7 +2869,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
     // Hotkey listener
     window.addEventListener('keydown', (e) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY'].includes(document.activeElement.tagName)) return;
+      if (document.activeElement.closest('.log-pane, #deviceActions')) return;
       if (['pairModal', 'hostKeyModal', 'passphraseModal'].some(id => !document.getElementById(id).classList.contains('hidden'))) {
         if (e.key === 'Escape') { pairClose(); passphraseClose(); document.getElementById('hostKeyModal').classList.add('hidden'); }
         return;
@@ -2800,102 +2905,466 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('viewEvents').classList.toggle('hidden', tab !== 'events');
       document.getElementById('viewInspector').classList.toggle('hidden', tab !== 'inspector');
       document.getElementById('viewTerminal').classList.toggle('hidden', tab !== 'terminal');
-
-      const btnLogs = document.getElementById('tabLogsBtn');
-      const btnEvents = document.getElementById('tabEventsBtn');
-      const btnInsp = document.getElementById('tabInspectorBtn');
-      const btnTerm = document.getElementById('tabTerminalBtn');
-
-      [btnLogs, btnEvents, btnInsp, btnTerm].forEach(b => {
-        b.className = "px-3 py-1.5 rounded-lg text-xs font-bold text-brand-muted hover:text-brand-text hover:bg-brand-surface transition flex items-center space-x-1.5";
-      });
-
-      const activeEl = { logs: btnLogs, events: btnEvents, inspector: btnInsp, terminal: btnTerm }[tab];
-      activeEl.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-brand-surface text-brand-text border border-brand-border transition flex items-center space-x-1.5";
+      const ids = { logs: 'tabLogsBtn', events: 'tabEventsBtn', inspector: 'tabInspectorBtn', terminal: 'tabTerminalBtn' };
+      Object.keys(ids).forEach(k => document.getElementById(ids[k]).setAttribute('aria-selected', String(k === tab)));
+      // Filter, find, levels and view mode only act on the console lines.
+      document.getElementById('consoleFilters').style.display = tab === 'logs' ? '' : 'none';
+      syncFollowUi();
       if (tab === 'terminal') { ensureTerminal(); termFit(); term && term.focus(); }
     }
 
-    function toggleAutoScroll() {
-      autoScroll = !autoScroll;
-      const lbl = document.getElementById('scrollStateLabel');
-      const btn = document.getElementById('pauseScrollBtn');
-      if (autoScroll) {
-        lbl.innerText = 'Follow';
-        btn.classList.remove('bg-amber-500/20', 'text-amber-400', 'border-amber-500/40');
-      } else {
-        lbl.innerText = 'Paused';
-        btn.classList.add('bg-amber-500/20', 'text-amber-400', 'border-amber-500/40');
+    // ---- Console log view --------------------------------------------------
+    // Every line stays in conn.logsBuffer (BUFFER_MAX per connection); only the
+    // newest DOM_MAX matching lines are drawn, appended in one batch per frame.
+    // ponytail: no windowed virtual scroll (rows have variable height). Add one
+    // if DOM_MAX has to grow beyond a few thousand rows.
+    const BUFFER_MAX = 20000;
+    const DOM_MAX = 3000;
+    const IDF_RE = /^([EWIDV]) [(](\\d+)[)] ([^\\s:]+): ([\\s\\S]*)$/;
+    let viewMode = (() => {
+      try { return localStorage.getItem('serialdeck.viewMode') === 'raw' ? 'raw' : 'structured'; } catch (err) { return 'structured'; }
+    })();
+    const regexMode = { filter: false, find: false };
+    let filterFn = null, findFn = null, tagNeedle = '';
+    let filterTimer = null, flushScheduled = false, tagsDirty = false;
+    const pendingRows = { logsPanePrimary: [], logsPaneSplitContent: [] };
+
+    // Parsed ESP-IDF line ("I (1234) tag: message"), or null: such a line is shown whole.
+    function parsedLine(entry) {
+      if (entry._p === undefined) {
+        const m = entry.level && entry.level !== 'plain' && entry.level !== 'elf' && entry.level !== 'tx'
+          ? IDF_RE.exec(entry.text || '') : null;
+        entry._p = m ? { tick: m[2], tag: m[3], msg: m[4] } : null;
       }
+      return entry._p;
+    }
+
+    function adopt(conn, entry) {
+      entry._n = ++conn.seq;
+      const p = parsedLine(entry);
+      if (p && !conn.tags.has(p.tag) && conn.tags.size < 500) { conn.tags.add(p.tag); tagsDirty = true; }
+    }
+
+    function trimBuffer(conn) {
+      if (conn.logsBuffer.length <= BUFFER_MAX + 1000) return;
+      const drop = conn.logsBuffer.length - BUFFER_MAX;
+      conn.logsBuffer.splice(0, drop);
+      conn.trimmed += drop;
+    }
+
+    function isPaused(conn) { return conn.pauseSeq !== null; }
+
+    function makeMatcher(text, isRegex) {
+      if (!text) return { fn: null };
+      if (isRegex) {
+        try { const re = new RegExp(text, 'i'); return { fn: s => re.test(s) }; }
+        catch (err) { return { fn: null, error: err.message }; }
+      }
+      const needle = text.toLowerCase();
+      return { fn: s => s.toLowerCase().includes(needle) };
+    }
+
+    function refreshMatchers() {
+      const f = makeMatcher(document.getElementById('logSearchInput').value, regexMode.filter);
+      const g = makeMatcher(document.getElementById('findInput').value, regexMode.find);
+      filterFn = f.fn; findFn = g.fn;
+      tagNeedle = document.getElementById('tagFilterInput').value.trim().toLowerCase();
+      const err = f.error ? 'Filter: ' + f.error : (g.error ? 'Find: ' + g.error : '');
+      const box = document.getElementById('filterError');
+      box.textContent = err; box.title = err;
+      box.classList.toggle('hidden', !err);
+      document.getElementById('filterGroup').classList.toggle('invalid', !!f.error);
+      document.getElementById('findGroup').classList.toggle('invalid', !!g.error);
+    }
+
+    function toggleRegex(which) {
+      regexMode[which] = !regexMode[which];
+      document.getElementById(which === 'filter' ? 'filterRegexBtn' : 'findRegexBtn').setAttribute('aria-pressed', String(regexMode[which]));
+      if (which === 'filter') onFilterInput(true); else onFindInput();
+    }
+
+    function onFilterInput(now) {
+      refreshMatchers();
+      clearTimeout(filterTimer);
+      if (now) applyLogFilter(); else filterTimer = setTimeout(applyLogFilter, 120);
     }
 
     function toggleLevelFilter(lvl) {
-      const el = document.getElementById('lvl-' + lvl);
-      if (enabledLevels.has(lvl)) {
-        enabledLevels.delete(lvl);
-        el.className = "px-2 py-0.5 rounded text-brand-muted hover:text-brand-text";
-      } else {
-        enabledLevels.add(lvl);
-        const colorMap = {
-          'E': 'bg-brand-danger/20 text-brand-danger border border-brand-danger/40',
-          'W': 'bg-brand-warning/20 text-brand-warning border border-brand-warning/40',
-          'I': 'bg-brand-success/20 text-brand-success border border-brand-success/40',
-          'D': 'bg-brand-blue/20 text-brand-blue border border-brand-blue/40',
-          'V': 'bg-brand-purple/20 text-brand-purple border border-brand-purple/40',
-          'elf': 'bg-brand-cyan/20 text-brand-cyan border border-brand-cyan/40',
-          'tx': 'bg-brand-tx/20 text-brand-tx border border-brand-tx/40',
-          'plain': 'bg-brand-surfaceAlt text-brand-text border border-brand-border',
-        };
-        el.className = `px-2 py-0.5 rounded ${colorMap[lvl] || ''}`;
-      }
+      const on = !enabledLevels.has(lvl);
+      if (on) enabledLevels.add(lvl); else enabledLevels.delete(lvl);
+      document.getElementById('lvl-' + lvl).setAttribute('aria-pressed', String(on));
       applyLogFilter();
     }
 
-    function renderLogsInto(id, containerId) {
-      const search = document.getElementById('logSearchInput').value.toLowerCase();
-      const container = document.getElementById(containerId);
-      container.innerHTML = '';
-      ensureConn(id).logsBuffer.forEach(entry => {
-        if (!shouldDisplayLog(entry, search)) return;
-        renderLogEntry(entry, false, containerId);
+    function setViewMode(mode) {
+      viewMode = mode === 'raw' ? 'raw' : 'structured';
+      try { localStorage.setItem('serialdeck.viewMode', viewMode); } catch (err) {}
+      document.getElementById('viewRawBtn').setAttribute('aria-pressed', String(viewMode === 'raw'));
+      document.getElementById('viewStructBtn').setAttribute('aria-pressed', String(viewMode === 'structured'));
+      applyLogFilter();
+    }
+
+    function shouldDisplayLog(entry) {
+      const lvl = entry.level || 'plain';
+      const lvlKey = lvl === 'error' ? 'E' : (lvl === 'warning' ? 'W' : (lvl === 'info' ? 'I' : (lvl === 'debug' ? 'D' : (lvl === 'verbose' ? 'V' : lvl))));
+      if (!enabledLevels.has(lvlKey)) return false;
+      if (filterFn && !filterFn(entry.text)) return false;
+      if (tagNeedle) {
+        const p = parsedLine(entry);
+        if (!p || !p.tag.toLowerCase().includes(tagNeedle)) return false;
+      }
+      return true;
+    }
+
+    // Rows are built as one HTML string per batch (escaped text only): far cheaper than
+    // createElement per cell. The entry behind a row is found again through data-n.
+    function rowHtml(entry, containerId) {
+      const p = viewMode === 'structured' ? parsedLine(entry) : null;
+      const parsed = p || parsedLine(entry);
+      const hit = findFn && findFn(entry.text) ? ' find-hit' : '';
+      const tip = (parsed ? 'device tick ' + parsed.tick + ' ms - ' : '') + 'click to inspect this line';
+      let html = '<div class="log-row' + (p ? ' struct' : viewMode === 'raw' ? ' rawl' : '') + hit + '" id="' + containerId + '-r' + entry._n + '" data-n="' + entry._n +
+        '"><div class="lr-line"><span class="lr-time" title="' + tip + '">' + escapeHtml(entry.time || '') + '</span>';
+      if (p) {
+        const key = { error: 'E', warning: 'W', info: 'I', debug: 'D', verbose: 'V' }[entry.level];
+        html += '<span class="lr-lvl lv-' + entry.level + '" title="' + entry.level + '">' + key + '</span>' +
+          '<span class="lr-tag" title="' + escapeHtml(p.tag) + '">' + escapeHtml(p.tag) + '</span>' +
+          '<span class="lr-msg m-' + entry.level + '">' + escapeHtml(p.msg) + '</span>';
+      } else {
+        html += '<span class="lr-msg m-' + (entry.level || 'plain') + '">' + escapeHtml(entry.text || '') + '</span>';
+      }
+      return html + '</div></div>';
+    }
+
+    function paneConn(pane) { return ensureConn(pane.id === 'logsPaneSplitContent' ? splitConnId : connId); }
+
+    // Binary search: logsBuffer is ordered by _n.
+    function entryOf(row) {
+      const buf = paneConn(row.closest('.log-pane')).logsBuffer, n = +row.dataset.n;
+      let lo = 0, hi = buf.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (buf[mid]._n === n) return buf[mid];
+        if (buf[mid]._n < n) lo = mid + 1; else hi = mid - 1;
+      }
+      return { text: row.textContent, level: 'plain', time: '' };
+    }
+
+    function scheduleFlush() {
+      if (flushScheduled) return;
+      flushScheduled = true;
+      requestAnimationFrame(flushRows);
+    }
+
+    function queueRow(containerId, entry) {
+      const list = pendingRows[containerId];
+      list.push(entry);
+      if (list.length > DOM_MAX * 2) list.splice(0, list.length - DOM_MAX);  // hidden window: keep memory bounded
+      scheduleFlush();
+    }
+
+    function trimRows(container) {
+      if (container.childElementCount <= DOM_MAX + 200) return;
+      // Keep the line being read at the same place on screen while old rows go.
+      let anchor = null, top = 0;
+      if (!autoScroll) {
+        const box = container.getBoundingClientRect();
+        anchor = Array.from(container.children).slice(container.childElementCount - DOM_MAX)
+          .find(r => r.getBoundingClientRect().bottom > box.top) || null;
+        if (anchor) top = anchor.getBoundingClientRect().top;
+      }
+      while (container.childElementCount > DOM_MAX) container.firstElementChild.remove();
+      if (anchor) container.scrollTop += anchor.getBoundingClientRect().top - top;
+    }
+
+    function flushRows() {
+      flushScheduled = false;
+      Object.keys(pendingRows).forEach(containerId => {
+        const list = pendingRows[containerId];
+        if (!list.length) return;
+        pendingRows[containerId] = [];
+        const container = document.getElementById(containerId);
+        container.insertAdjacentHTML('beforeend', list.slice(-DOM_MAX).map(e => rowHtml(e, containerId)).join(''));
+        trimRows(container);
+        if (autoScroll) container.scrollTop = container.scrollHeight;
       });
+      const conn = ensureConn(connId);
+      document.getElementById('logCountBadge').innerText = conn.logsBuffer.length;
+      if (tagsDirty) { tagsDirty = false; refreshTagList(); }
+      updateFindCount();
+    }
+
+    function renderLogsInto(id, containerId) {
+      const conn = ensureConn(id);
+      const container = document.getElementById(containerId);
+      const limit = isPaused(conn) ? conn.pauseSeq : Infinity;
+      pendingRows[containerId] = [];
+      const shown = [];
+      let older = 0;
+      for (let i = conn.logsBuffer.length - 1; i >= 0; i--) {
+        const entry = conn.logsBuffer[i];
+        if (entry._n > limit || !shouldDisplayLog(entry)) continue;
+        if (shown.length < DOM_MAX) shown.push(entry); else older++;
+      }
+      let html = '';
+      if (older) {
+        html = '<div class="log-note text-[11px] text-brand-muted px-1 py-1">' + older.toLocaleString() +
+          ' older matching lines are not drawn (only the newest ' + DOM_MAX.toLocaleString() +
+          ' are). Narrow the filter, or use Export for the hub history.</div>';
+      }
+      for (let i = shown.length - 1; i >= 0; i--) html += rowHtml(shown[i], containerId);
+      container.innerHTML = html;
       if (autoScroll) container.scrollTop = container.scrollHeight;
     }
 
     function applyLogFilter() {
       renderLogsInto(connId, 'logsPanePrimary');
       if (splitEnabled && splitConnId) renderLogsInto(splitConnId, 'logsPaneSplitContent');
+      updateFindCount();
+      renderStatusBar();
     }
 
-    function shouldDisplayLog(entry, search) {
-      const lvl = entry.level || 'plain';
-      const lvlKey = lvl === 'error' ? 'E' : (lvl === 'warning' ? 'W' : (lvl === 'info' ? 'I' : (lvl === 'debug' ? 'D' : (lvl === 'verbose' ? 'V' : lvl))));
-      if (!enabledLevels.has(lvlKey)) return false;
-      if (search && !entry.text.toLowerCase().includes(search)) return false;
-      return true;
+    function refreshTagList() {
+      const list = document.getElementById('tagList');
+      list.replaceChildren(...Array.from(ensureConn(connId).tags).sort().map(t => new Option(t, t)));
     }
 
-    function renderLogEntry(entry, doScroll = true, containerId = 'logsPanePrimary') {
-      const container = document.getElementById(containerId);
-      const div = document.createElement('div');
-      div.className = "py-0.5 px-1 hover:bg-brand-surfaceAlt/40 rounded flex items-start space-x-2";
+    // ---- Find: highlight inside the lines already shown, never hides any ----
+    function findRows() { return Array.from(document.querySelectorAll('#logsPanePrimary .log-row.find-hit')); }
 
-      const timeSpan = `<span class="text-brand-muted select-none text-[10px] w-20 shrink-0">${entry.time || ''}</span>`;
-      let textClass = 'text-brand-text';
-      if (entry.level === 'error') textClass = 'text-brand-danger font-semibold';
-      else if (entry.level === 'warning') textClass = 'text-brand-warning';
-      else if (entry.level === 'info') textClass = 'text-brand-success';
-      else if (entry.level === 'debug') textClass = 'text-brand-blue';
-      else if (entry.level === 'verbose') textClass = 'text-brand-purple';
-      else if (entry.level === 'elf') textClass = 'text-brand-cyan';
-      else if (entry.level === 'tx') textClass = 'text-brand-tx';
+    function updateFindCount() {
+      const box = document.getElementById('findCount');
+      if (!findFn) { box.textContent = '0/0'; return; }
+      const hits = findRows();
+      const cur = hits.findIndex(r => r.classList.contains('find-cur'));
+      box.textContent = (cur + 1) + '/' + hits.length;
+    }
 
-      div.innerHTML = `${timeSpan}<span class="${textClass} flex-1 break-all">${escapeHtml(entry.text)}</span>`;
-      container.appendChild(div);
+    function onFindInput() {
+      refreshMatchers();
+      document.querySelectorAll('.log-pane .log-row').forEach(r => {
+        r.classList.toggle('find-hit', !!(findFn && findFn(entryOf(r).text)));
+        r.classList.remove('find-cur');
+      });
+      updateFindCount();
+    }
 
-      if (doScroll && autoScroll) {
-        container.scrollTop = container.scrollHeight;
+    function findStep(dir) {
+      const hits = findRows();
+      if (!hits.length) return;
+      let i = hits.findIndex(r => r.classList.contains('find-cur'));
+      hits.forEach(r => r.classList.remove('find-cur'));
+      i = i < 0 ? (dir > 0 ? 0 : hits.length - 1) : (i + dir + hits.length) % hits.length;
+      hits[i].classList.add('find-cur');
+      setFollow(false);
+      hits[i].scrollIntoView({ block: 'center' });
+      updateFindCount();
+    }
+
+    function findKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.target.value = ''; onFindInput(); e.target.blur(); }
+    }
+
+    // ---- Pause (freeze what is drawn) and Follow (stay on the newest line) ----
+    function togglePause() {
+      const ids = [connId];
+      if (splitEnabled && splitConnId) ids.push(splitConnId);
+      const conn = ensureConn(connId);
+      const pause = !isPaused(conn);
+      ids.forEach(id => { const c = ensureConn(id); c.pauseSeq = pause ? c.seq : null; });
+      syncPauseUi();
+      applyLogFilter();
+    }
+
+    function syncPauseUi() {
+      const on = isPaused(ensureConn(connId));
+      const btn = document.getElementById('pauseBtn');
+      btn.setAttribute('aria-pressed', String(on));
+      document.getElementById('pauseLabel').textContent = on ? 'Resume' : 'Pause';
+      btn.querySelector('i').className = 'fa-solid ' + (on ? 'fa-play' : 'fa-pause');
+      renderStatusBar();
+    }
+
+    function setFollow(on) {
+      autoScroll = on;
+      syncFollowUi();
+      if (on) ['logsPanePrimary', 'logsPaneSplitContent', 'viewEvents'].forEach(id => {
+        const el = document.getElementById(id); el.scrollTop = el.scrollHeight;
+      });
+    }
+
+    function toggleAutoScroll() { setFollow(!autoScroll); }
+
+    function syncFollowUi() {
+      document.getElementById('pauseScrollBtn').setAttribute('aria-pressed', String(autoScroll));
+      document.getElementById('scrollStateLabel').textContent = autoScroll ? 'Follow' : 'Follow off';
+      document.getElementById('jumpLatest').style.display = !autoScroll && activeTab === 'logs' ? 'flex' : 'none';
+      renderStatusBar();
+    }
+
+    // Scrolling up by hand turns Follow off; scrolling back to the bottom turns it on.
+    function watchUserScroll(containerId) {
+      const el = document.getElementById(containerId);
+      let intent = 0;
+      const mark = () => { intent = Date.now(); };
+      ['wheel', 'touchstart', 'pointerdown'].forEach(ev => el.addEventListener(ev, mark, { passive: true }));
+      el.addEventListener('keydown', e => { if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) mark(); });
+      el.addEventListener('scroll', () => {
+        if (Date.now() - intent > 600) return;
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        if (!atBottom && autoScroll) setFollow(false);
+        else if (atBottom && !autoScroll) setFollow(true);
+      });
+    }
+
+    // ---- Selecting, inspecting and copying a line ----
+    function selectedRow(pane) { return pane.querySelector('.log-row.sel'); }
+
+    function selectRow(pane, row) {
+      const old = selectedRow(pane);
+      if (old) old.classList.remove('sel');
+      if (row) {
+        row.classList.add('sel');
+        pane.setAttribute('aria-activedescendant', row.id);
+        row.scrollIntoView({ block: 'nearest' });
+      } else {
+        pane.removeAttribute('aria-activedescendant');
       }
     }
+
+    function extractJson(text) {
+      const a = text.indexOf('{'), b = text.lastIndexOf('}');
+      if (a < 0 || b <= a) return null;
+      try { return JSON.stringify(JSON.parse(text.slice(a, b + 1)), null, 2); } catch (err) { return null; }
+    }
+
+    function toggleDetail(row) {
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains('lr-detail')) { next.remove(); return; }
+      const entry = entryOf(row), p = parsedLine(entry);
+      const box = document.createElement('div');
+      box.className = 'lr-detail text-[11px]';
+      const meta = document.createElement('div');
+      meta.className = 'lr-meta';
+      meta.textContent = [entry.time, entry.level, p ? 'tag ' + p.tag : '', p ? 'device tick ' + p.tick + ' ms' : ''].filter(Boolean).join(' - ');
+      const pre = document.createElement('pre');
+      pre.textContent = p ? p.msg : entry.text;
+      box.append(meta, pre);
+      const json = extractJson(p ? p.msg : entry.text);
+      if (json) { const j = document.createElement('pre'); j.className = 'lr-json'; j.textContent = json; box.appendChild(j); }
+      [['Copy message', p ? p.msg : entry.text], ['Copy raw line', entry.text]].forEach(([label, text]) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = label;
+        b.addEventListener('click', () => copyText(text, null));
+        box.appendChild(b);
+      });
+      row.after(box);
+    }
+
+    function setupLogPane(containerId) {
+      const pane = document.getElementById(containerId);
+      watchUserScroll(containerId);
+      pane.addEventListener('click', e => {
+        if (e.target.closest('.lr-detail')) return;
+        const row = e.target.closest('.log-row');
+        if (!row) return;
+        if (e.target.closest('.lr-time')) { selectRow(pane, row); toggleDetail(row); return; }
+        if (window.getSelection().isCollapsed) selectRow(pane, row);
+      });
+      pane.addEventListener('keydown', e => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const rows = () => Array.from(pane.querySelectorAll('.log-row'));
+        let cur = selectedRow(pane);
+        const move = to => { e.preventDefault(); setFollow(false); selectRow(pane, to); };
+        const all = rows();
+        if (!all.length) return;
+        const idx = cur ? all.indexOf(cur) : -1;
+        if (e.key === 'ArrowUp') move(all[Math.max(0, idx < 0 ? all.length - 1 : idx - 1)]);
+        else if (e.key === 'ArrowDown') move(all[Math.min(all.length - 1, idx + 1)]);
+        else if (e.key === 'PageUp') move(all[Math.max(0, idx - 15)]);
+        else if (e.key === 'PageDown') move(all[Math.min(all.length - 1, idx + 15)]);
+        else if (e.key === 'Home') move(all[0]);
+        else if (e.key === 'End') move(all[all.length - 1]);
+        else if (e.key === 'Enter' && cur) { e.preventDefault(); toggleDetail(cur); }
+        else if ((e.key === 'c' || e.key === 'C') && cur) { e.preventDefault(); copyText(entryOf(cur).text, null); }
+        else if (e.key === 'Escape' && cur) { e.preventDefault(); const n = cur.nextElementSibling; if (n && n.classList.contains('lr-detail')) n.remove(); else selectRow(pane, null); }
+      });
+    }
+
+    // ---- Connection state and status bar ----
+    function connState(conn) {
+      const st = conn.status || {};
+      if (conn.connecting) return { text: 'Connecting…', icon: 'fa-solid fa-spinner fa-spin', cls: 'text-brand-warning' };
+      if (st.connected) {
+        if (st.link && st.link.state !== 'connected') return { text: linkStateText(st.link.state), icon: 'fa-solid fa-triangle-exclamation', cls: 'text-brand-warning' };
+        return { text: st.link ? 'Connected · SSH' : 'Connected', icon: 'fa-solid fa-circle-check', cls: 'text-brand-success' };
+      }
+      if (st.reconnecting) return { text: 'Reconnecting…', icon: 'fa-solid fa-rotate fa-spin', cls: 'text-brand-warning' };
+      if (conn.error) return { text: 'Error', icon: 'fa-solid fa-triangle-exclamation', cls: 'text-brand-danger' };
+      return { text: 'Disconnected', icon: 'fa-regular fa-circle', cls: 'text-brand-muted' };
+    }
+
+    function fmtBaud(b) { return b >= 1000000 && b % 100000 === 0 ? (b / 1000000) + 'M' : String(b); }
+
+    function refreshConnUi(conn) {
+      if (conn === ensureConn(connId)) updateStatus(conn.status); else renderConnTabs();
+    }
+
+    function renderStatusBar() {
+      const conn = ensureConn(connId), st = conn.status || {};
+      const s = connState(conn);
+      const icon = document.createElement('i');
+      icon.className = s.icon + ' ' + s.cls;
+      icon.setAttribute('aria-hidden', 'true');
+      const serial = st.connected && st.port && !isNetworkPort(st.port) && !isSshPort(st.port);
+      const where = st.connected && st.port ? (isSshPort(st.port) ? st.port.slice('ssh-socket://'.length) : st.port) : '';
+      const text = document.createElement('span');
+      text.textContent = [s.text, where, serial && st.baud ? fmtBaud(st.baud) + ' baud' : ''].filter(Boolean).join(' · ');
+      document.getElementById('sbConn').replaceChildren(icon, text);
+      const fol = document.getElementById('sbFollow');
+      if (isPaused(conn)) { fol.textContent = 'Paused · +' + (conn.seq - conn.pauseSeq).toLocaleString() + ' new'; fol.className = 'text-brand-warning'; }
+      else { fol.textContent = 'Follow ' + (autoScroll ? 'ON' : 'OFF'); fol.className = ''; }
+      document.getElementById('sbRate').textContent = st.connected ? 'RX ' + conn.rate.toLocaleString() + ' lines/s' : 'RX --';
+      const drawn = document.querySelectorAll('#logsPanePrimary .log-row').length;
+      document.getElementById('sbLines').textContent = drawn.toLocaleString() + ' shown · ' + conn.logsBuffer.length.toLocaleString() + ' buffered';
+      const trim = document.getElementById('sbTrim');
+      trim.textContent = conn.trimmed ? conn.trimmed.toLocaleString() + ' oldest lines dropped' : '';
+      trim.classList.toggle('hidden', !conn.trimmed);
+    }
+
+    // RX rate: lines this window received per second, from a real counter.
+    setInterval(() => {
+      Object.keys(conns).forEach(id => { const c = conns[id]; c.rate = c.lines - c.lastLines; c.lastLines = c.lines; });
+      renderStatusBar();
+    }, 1000);
+
+    // ---- TX composer: collapsing keeps the draft and the history ----
+    let txCollapsed = (() => { try { return localStorage.getItem('serialdeck.txCollapsed') === '1'; } catch (err) { return false; } })();
+    function applyTxCollapsed() {
+      document.getElementById('txBody').style.display = txCollapsed ? 'none' : '';
+      document.getElementById('txToggle').setAttribute('aria-expanded', String(!txCollapsed));
+      document.getElementById('txChevron').className = 'fa-solid text-[9px] ' + (txCollapsed ? 'fa-chevron-right' : 'fa-chevron-down');
+    }
+    function toggleTx() {
+      txCollapsed = !txCollapsed;
+      try { localStorage.setItem('serialdeck.txCollapsed', txCollapsed ? '1' : '0'); } catch (err) {}
+      applyTxCollapsed();
+    }
+
+    // ---- Device Actions menu ----
+    function deviceAction(action) {
+      document.getElementById('deviceActions').open = false;
+      return controlLine(action);
+    }
+    document.addEventListener('click', e => {
+      const menu = document.getElementById('deviceActions');
+      if (menu.open && !menu.contains(e.target)) menu.open = false;
+    });
+    document.addEventListener('keydown', e => {
+      const menu = document.getElementById('deviceActions');
+      if (e.key === 'Escape' && menu.open) { menu.open = false; menu.querySelector('summary').focus(); }
+    });
 
     function renderEventEntry(entry) {
       const container = document.getElementById('viewEvents');
@@ -2924,8 +3393,13 @@ HTML_PAGE = """<!DOCTYPE html>
       const conn = ensureConn(connId);
       if (activeTab === 'logs') {
         conn.logsBuffer.length = 0;
+        conn.trimmed = 0;
+        if (isPaused(conn)) conn.pauseSeq = conn.seq;
+        pendingRows.logsPanePrimary = [];
         document.getElementById('logsPanePrimary').innerHTML = '';
         document.getElementById('logCountBadge').innerText = '0';
+        updateFindCount();
+        renderStatusBar();
       } else if (activeTab === 'events') {
         conn.eventsBuffer.length = 0;
         document.getElementById('viewEvents').innerHTML = '';
@@ -2935,7 +3409,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function clearSplitLogs() {
       if (!splitConnId) return;
-      ensureConn(splitConnId).logsBuffer.length = 0;
+      const conn = ensureConn(splitConnId);
+      conn.logsBuffer.length = 0;
+      if (isPaused(conn)) conn.pauseSeq = conn.seq;
+      pendingRows.logsPaneSplitContent = [];
       document.getElementById('logsPaneSplitContent').innerHTML = '';
     }
 
@@ -3119,39 +3596,45 @@ HTML_PAGE = """<!DOCTYPE html>
         });
       } else {
         if (!port) { alert('Select a serial port, an SSH device, or enter a tcp:// / udp:// / unix:// endpoint first.'); return; }
-        const connect = async (on_baud_conflict) => {
-          const body = { id: connId, port, baud, mode: document.getElementById('modeSelect').value,
-                         on_baud_conflict };
-          if (connectPassphrase) body.passphrase = connectPassphrase;
-          connectPassphrase = '';
-          const res = await fetch('/api/connect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
-            body: JSON.stringify(body)
-          });
-          body.passphrase = '';
-          return res.json();
-        };
-        let data = await connect('error');
-        const conflict = data.baud_conflict;
-        if (conflict) {
-          // Other clients share this UART at another baud: the user decides.
-          const others = `${conflict.client_count} other client(s)`;
-          if (confirm(`${conflict.port} is open by ${others} at ${conflict.live_baud} baud.\n\n` +
-                      `Change the UART to ${conflict.requested_baud} baud for everyone?\n` +
-                      `It must match the firmware, or every client will see garbage.`)) {
-            data = await connect('retime');
-          } else if (confirm(`Connect at the live ${conflict.live_baud} baud instead?`)) {
-            data = await connect('join');
-          } else {
-            return;
-          }
-        }
-        if (!data.ok) {
-          if (isSshPort(port) && data.code) showLinkProblem(port, data.code, data.error);
-          else alert(data.error || 'Connection failed');
-        } else if (isNetworkPort(port)) rememberNetPort(port);
+        conn.connecting = true; conn.error = false; refreshConnUi(conn);
+        try { await connectFlow(port, baud, conn); } finally { conn.connecting = false; refreshConnUi(conn); }
       }
+    }
+
+    async function connectFlow(port, baud, conn) {
+      const connect = async (on_baud_conflict) => {
+        const body = { id: connId, port, baud, mode: document.getElementById('modeSelect').value,
+                       on_baud_conflict };
+        if (connectPassphrase) body.passphrase = connectPassphrase;
+        connectPassphrase = '';
+        const res = await fetch('/api/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
+          body: JSON.stringify(body)
+        });
+        body.passphrase = '';
+        return res.json();
+      };
+      let data = await connect('error');
+      const conflict = data.baud_conflict;
+      if (conflict) {
+        // Other clients share this UART at another baud: the user decides.
+        const others = `${conflict.client_count} other client(s)`;
+        if (confirm(`${conflict.port} is open by ${others} at ${conflict.live_baud} baud.\n\n` +
+                    `Change the UART to ${conflict.requested_baud} baud for everyone?\n` +
+                    `It must match the firmware, or every client will see garbage.`)) {
+          data = await connect('retime');
+        } else if (confirm(`Connect at the live ${conflict.live_baud} baud instead?`)) {
+          data = await connect('join');
+        } else {
+          return;
+        }
+      }
+      if (!data.ok) {
+        conn.error = true;
+        if (isSshPort(port) && data.code) showLinkProblem(port, data.code, data.error);
+        else alert(data.error || 'Connection failed');
+      } else if (isNetworkPort(port)) rememberNetPort(port);
     }
 
     async function sendButton(button) {
@@ -3191,6 +3674,7 @@ HTML_PAGE = """<!DOCTYPE html>
         ? 'Click the terminal and type; keys go straight to the UART. Select to copy · Ctrl+Shift+V paste.'
         : 'Control mode: control frames are active. Switch to "Linux / Raw" to use this terminal.';
       if (linux && prev !== 'linux') switchTab('terminal');
+      else if (!linux && prev === 'linux' && activeTab === 'terminal') switchTab('logs');
     }
 
     async function changeConsoleMode(mode) {
@@ -3482,7 +3966,11 @@ HTML_PAGE = """<!DOCTYPE html>
       const isActive = id === connId;
       if (event.type === 'init') {
         conn.status = event.status || {};
-        if (event.logs) conn.logsBuffer = event.logs;
+        if (event.logs) {
+          conn.logsBuffer = event.logs; conn.seq = 0; conn.pauseSeq = null; conn.tags.clear(); conn.trimmed = 0;
+          conn.logsBuffer.forEach(e => adopt(conn, e));
+          tagsDirty = true;
+        }
         conn.rawChunks = []; conn.rawBytes = 0;
         if (event.raw) pushRaw(conn, b64ToBytes(event.raw));
         if (isActive) termReplay(conn);
@@ -3490,18 +3978,20 @@ HTML_PAGE = """<!DOCTYPE html>
         if (isActive) { updateStatus(conn.status); applyLogFilter(); }
       } else if (event.type === 'status') {
         conn.status = Object.assign({}, conn.status, event);
+        if (conn.status.connected) conn.error = false;
         if (!conn.status.connected) conn.termPending = [];
         renderConnTabs();
         if (isActive) updateStatus(conn.status);
       } else if (event.type === 'log') {
         conn.logsBuffer.push(event);
-        const search = document.getElementById('logSearchInput').value.toLowerCase();
-        if (isActive) {
-          document.getElementById('logCountBadge').innerText = conn.logsBuffer.length;
-          if (shouldDisplayLog(event, search)) renderLogEntry(event, true, 'logsPanePrimary');
-        }
-        if (splitEnabled && id === splitConnId && shouldDisplayLog(event, search)) {
-          renderLogEntry(event, true, 'logsPaneSplitContent');
+        adopt(conn, event);
+        conn.lines++;
+        trimBuffer(conn);
+        // A paused connection keeps capturing; only drawing is frozen.
+        if (!isPaused(conn)) {
+          if (id === connId && shouldDisplayLog(event)) queueRow('logsPanePrimary', event);
+          if (splitEnabled && id === splitConnId && shouldDisplayLog(event)) queueRow('logsPaneSplitContent', event);
+          if (id === connId) scheduleFlush();
         }
       } else if (event.type === 'raw') {
         const bytes = b64ToBytes(event.data);
@@ -3546,8 +4036,11 @@ HTML_PAGE = """<!DOCTYPE html>
           (id === connId
             ? 'bg-brand-surface text-brand-text border-brand-accent/60'
             : 'bg-transparent text-brand-muted border-brand-border hover:text-brand-text hover:bg-brand-surface');
-        const dotColor = conn.status.connected ? 'bg-brand-success' : 'bg-brand-border';
-        chip.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${dotColor}"></span><span>${escapeHtml(connLabel(id, conn.status))}</span>`;
+        const cs = connState(conn);
+        chip.setAttribute('role', 'tab');
+        chip.setAttribute('aria-selected', String(id === connId));
+        chip.title = id + ' · ' + cs.text;
+        chip.innerHTML = `<i class="${cs.icon} ${cs.cls} text-[9px]" aria-hidden="true"></i><span>${escapeHtml(connLabel(id, conn.status))}</span>`;
         if (id !== 'default') {
           const closeBtn = document.createElement('span');
           closeBtn.className = 'ml-1 text-brand-muted hover:text-brand-danger';
@@ -3582,6 +4075,8 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('viewEvents').innerHTML = '';
       document.getElementById('logCountBadge').innerText = conn.logsBuffer.length;
       document.getElementById('eventCountBadge').innerText = conn.eventsBuffer.length;
+      refreshTagList();
+      syncPauseUi();
       applyLogFilter();
       conn.eventsBuffer.forEach(renderEventEntry);
       if (splitEnabled && splitConnId) { openStream(splitConnId); renderLogsInto(splitConnId, 'logsPaneSplitContent'); }
@@ -3772,34 +4267,22 @@ HTML_PAGE = """<!DOCTYPE html>
           }
           baudSelect.value = String(st.baud);
         }
-        dot.className = "w-2.5 h-2.5 rounded-full bg-brand-success shadow-lg shadow-brand-success/50";
-        lbl.innerText = isNetworkPort(st.port) ? st.port : (isSshPort(st.port) ? st.port.slice('ssh-socket://'.length) : `${st.port} @ ${st.baud}`);
-        lbl.className = "mono text-brand-success font-bold";
-        if (st.link) {
-          const link = st.link;
-          const ok = link.state === 'connected';
-          lbl.innerText = ok ? `${link.user}@${link.device} · SSH ✓` : `${link.device} · ${linkStateText(link.state)}`;
-          lbl.className = ok ? "mono text-brand-success font-bold" : "mono text-brand-warning font-bold";
-          if (!ok) dot.className = "w-2.5 h-2.5 rounded-full bg-brand-warning animate-pulse";
-        }
         btnText.innerText = "Disconnect";
         btn.className = "px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-danger hover:bg-brand-danger/80 text-white shadow";
       } else {
-        dot.className = "w-2.5 h-2.5 rounded-full bg-brand-danger";
-        lbl.innerText = "Disconnected";
-        lbl.className = "mono text-brand-muted";
         btnText.innerText = "Connect";
         btn.className = "px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-accent hover:bg-brand-accentHover text-brand-bg shadow";
       }
+      // State is text plus icon; port and baud are already in the pickers, not repeated here.
+      const state = connState(conn0());
+      dot.className = state.icon + ' ' + state.cls;
+      lbl.innerText = state.text;
+      lbl.className = 'mono font-bold ' + state.cls;
+      document.getElementById('connectionStatus').title = connected && st.port ? st.port + (st.baud && !isNetworkPort(st.port) && !isSshPort(st.port) ? ' @ ' + st.baud : '') : '';
 
       applyPortKindUi(connected ? st.port : selectedPort());
       updateLinkFix(connected ? st : null);
       if (typeof st.auto_reconnect === 'boolean') document.getElementById('autoReconnect').checked = st.auto_reconnect;
-      if (!connected && st.reconnecting) {
-        dot.className = "w-2.5 h-2.5 rounded-full bg-brand-warning animate-pulse";
-        lbl.innerText = "Reconnecting…";
-        lbl.className = "mono text-brand-warning font-bold";
-      }
       if (st.console_mode) applyModeUi(st.console_mode);
       if (st.fsm) {
         document.getElementById('fsmBadge').innerText = st.fsm;
@@ -3819,6 +4302,10 @@ HTML_PAGE = """<!DOCTYPE html>
       if (st.telemetry) {
         document.getElementById('inspectorContent').innerText = JSON.stringify(st.telemetry, null, 2);
       }
+      document.getElementById('txTarget').textContent = connected && st.port ? (isSshPort(st.port) ? st.port.slice('ssh-socket://'.length) : st.port) : 'no connection';
+      document.getElementById('txSendBtn').disabled = !connected;
+      renderConnTabs();
+      renderStatusBar();
       if (st.elf && !document.getElementById('elfPathInput').value) {
         document.getElementById('elfPathInput').value = st.elf;
       }
@@ -3842,6 +4329,7 @@ HTML_PAGE = """<!DOCTYPE html>
     };
     let linkFixAction = null;
 
+    function conn0() { return ensureConn(connId); }
     function linkStateText(state) { return LINK_TEXT[state] || state || ''; }
 
     function currentSshName() {
@@ -3888,10 +4376,12 @@ HTML_PAGE = """<!DOCTYPE html>
       panel.classList.toggle('hidden', !ssh);
       panel.classList.toggle('flex', ssh);
       document.getElementById('flashPanel').classList.toggle('hidden', nonSerial);
+      document.getElementById('deviceActions').classList.toggle('opacity-40', nonSerial);
       document.querySelectorAll('#healthBar button').forEach(b => {
         b.disabled = nonSerial;
         b.classList.toggle('opacity-40', nonSerial);
-        b.title = nonSerial ? 'Needs a physical UART' : '';
+        if (b.dataset.title === undefined) b.dataset.title = b.title;
+        b.title = nonSerial ? 'Needs a physical UART' : b.dataset.title;
       });
       if (ssh) {
         const dev = sshDevices.find(d => d.port_url === port);
@@ -4764,6 +5254,12 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!data.ok) { alert(data.error || 'Cannot quit right now.'); return; }
       document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#cfd8dc;background:#111318;height:100vh">Serial Deck stopped. You can close this tab.</div>';
     }
+    setupLogPane('logsPanePrimary');
+    setupLogPane('logsPaneSplitContent');
+    applyTxCollapsed();
+    refreshMatchers();
+    setViewMode(viewMode);
+    syncFollowUi();
     bootstrapConnections();
   </script>
 </body>
