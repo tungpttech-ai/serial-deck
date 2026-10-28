@@ -38,7 +38,10 @@ LOG_LINES = 500          # per run
 LOG_LINE_CHARS = 2000
 KEEP_FINISHED = 20
 MAX_RUNNING = 8
-STOP_GRACE_S = 3.0
+# A stop waits this long for the runner to exit, then force-kills it and waits again. The
+# control request that asked for it times out after 3 s, so on Windows (where the break
+# event often does not reach a runner without a console) both waits must fit in that.
+STOP_GRACE_S = 3.0 if os.name != "nt" else 1.0
 
 
 class ScriptRun:

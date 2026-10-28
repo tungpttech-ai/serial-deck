@@ -430,8 +430,13 @@ class HubSupervisionTest(ScriptEnvironment):
         eventually(lambda: self.control("script_status")["runs"])
         run_id = self.control("script_status")["runs"][0]["id"]
         from serial_deck.uart_client import open_uart_transport
+        # The hub counts data clients, it cannot tell the runner from a dashboard: a dashboard
+        # that attaches before the runner would be mistaken for it. Wait for the runner first.
+        channel = next(iter(self.hub.channels.values()))
+        eventually(lambda: len(channel.clients) >= 1)
         dashboard = open_uart_transport(self.manager.endpoint, 115200, 0.2)  # a real data client
         self.addCleanup(dashboard.close)
+        eventually(lambda: len(channel.clients) >= 2)
         with patch.object(service_module, "AUTORUN_GRACE_S", 0.0):
             time.sleep(1.5)
             self.assertEqual(self.control("script_logs", id=run_id)["run"]["state"], "running")
@@ -445,6 +450,7 @@ class HubSupervisionTest(ScriptEnvironment):
         time.sleep(0.5)
         self.assertEqual(len(self.control("script_status")["runs"]), 1)
 
+    @posix_only  # os.kill(pid, 0) probes on POSIX but terminates the process on Windows
     def test_shutdown_stops_every_script(self):
         self.write_script("long", "def run(dev):\n    dev.sleep(300)\n")
         run = self.control("script_run", name="long", port=self.device.port)["run"]

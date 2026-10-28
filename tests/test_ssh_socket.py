@@ -174,7 +174,8 @@ class HubUnixDeviceTest(unittest.TestCase):
             manager.request_control("flash_preview", build_dir=self.dir, flash_baud=460800)
 
 
-@posix_only
+@unittest.skipUnless(ssh_socket.supported() and ipc.BACKEND == "unix" and hasattr(socket, "SO_PEERCRED"),
+                     "needs SO_PEERCRED on unix sockets (macOS and the tcp backend rely on 0600 + a private directory)")
 class HubSocketSecurityTest(unittest.TestCase):
     def test_hub_sockets_are_owner_only_and_check_peer_uid(self):
         directory = tempfile.mkdtemp(prefix="sd-sec-")
@@ -820,6 +821,7 @@ class WebSshActionsTest(unittest.TestCase):
 
 
 class AgentSshNamesTest(unittest.TestCase):
+    @posix_only
     def test_names_resolve_to_ssh_socket_urls(self):
         from serial_deck.agent import DeckAgent
         agent = DeckAgent(policy="observe", socket_path="/nonexistent/hub.sock")
