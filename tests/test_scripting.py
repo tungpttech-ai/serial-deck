@@ -8,6 +8,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import tempfile
 import textwrap
 import threading
@@ -468,6 +469,28 @@ class HubSupervisionTest(ScriptEnvironment):
         channel = next(iter(self.hub.channels.values()))
         eventually(lambda: len(channel.clients) == 1)
         self.assertEqual(self.hub.real_clients(channel), 0)
+
+    def test_a_script_starts_in_a_frozen_build_that_is_not_an_appimage(self):
+        # self_command_env() is None there ("inherit as is"): start() must still work
+        # and hand the runner its run id.
+        from serial_deck import runtime
+        seen = {}
+        real_popen = script_supervisor.subprocess.Popen
+
+        def popen(command, **kwargs):
+            seen["env"] = kwargs.get("env")
+            return real_popen([sys.executable, "-c", "pass"], **{**kwargs, "env": None})
+
+        self.write_script("frozen_ok", "def run(dev):\n    pass\n")
+        with patch.object(runtime, "frozen", return_value=True), \
+                patch.object(script_supervisor, "scripting", wraps=scripting), \
+                patch.object(script_supervisor.ScriptSupervisor, "_default_command",
+                             lambda self, path, port, baud: ["x"]), \
+                patch.object(script_supervisor.subprocess, "Popen", popen), \
+                patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("APPIMAGE", None)
+            run = self.hub.scripts.start("frozen_ok", self.device.port)
+        self.assertEqual(seen["env"]["SERIAL_DECK_RUN_ID"], run.id)
 
     def test_runner_attached_rejects_unknown_and_manual_runs(self):
         with self.assertRaises(Exception):

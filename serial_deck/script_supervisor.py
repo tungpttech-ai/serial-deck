@@ -158,7 +158,7 @@ class ScriptSupervisor:
             run.process = subprocess.Popen(
                 command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
-                env={**(runtime.self_command_env() if runtime.frozen() else os.environ),
+                env={**((runtime.self_command_env() if runtime.frozen() else None) or os.environ),
                      "SERIAL_DECK_RUN_ID": run.id}, **detach)
             self.runs[run.id] = run
             self._trim()
