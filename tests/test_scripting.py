@@ -247,6 +247,22 @@ class RunScriptTest(ScriptEnvironment):
         code = scripting.run_script(path, dev, out=out.append)
         return code, out, transport
 
+    def test_an_on_line_watcher_exits_when_the_device_link_closes(self):
+        # A zombie runner would keep reporting itself attached to a hub that has
+        # long dropped its socket.
+        transport = FakeTransport()
+        transport.error = OSError("link lost")
+        result = []
+        path = self.write_script("t", "def on_line(dev, line):\n    pass\n")
+        dev = scripting.Device(transport, "/dev/x", 115200, log=lambda text: None)
+        worker = threading.Thread(
+            target=lambda: result.append(scripting.run_script(path, dev, out=lambda text: None)), daemon=True)
+        worker.start()
+        worker.join(5)
+        self.addCleanup(dev.close)
+        self.assertFalse(worker.is_alive(), "the watcher kept running on a dead link")
+        self.assertEqual(result, [1])
+
     def test_a_clean_run_returns_zero(self):
         transport = FakeTransport()
         transport.incoming += [b"login: "]

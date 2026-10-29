@@ -259,7 +259,9 @@ def run_script(path: Path, device: Device, out: Callable[[str], None] = print) -
         if callable(run):
             run(device)
         else:
-            device.stop_event.wait()  # a pure watcher lives until it is stopped
+            # a pure watcher lives until it is stopped or its link dies
+            while not device.stop_event.wait(0.2):
+                device._check_alive()
     except ScriptStopped:
         out("stopped")
         return 0
