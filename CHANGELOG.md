@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-29)
 
+- Fixed: a dashboard connecting before an autorun script's runner had attached was
+  counted as that runner, so `hub --shutdown` was allowed while the dashboard was open
+  and the script could be stopped under it. The runner now tells the hub when its data
+  socket is open (`runner_attached`); only attached runners are left out of the client
+  count. This resolves the 0.3.1 known issue. A runner that never reports (an older
+  one) is counted as a client, so the port stays open rather than closing early.
+- Fixed: an `on_line`-only script now exits when its device link closes instead of
+  lingering after the hub dropped its socket.
 - Custom metrics: turn a number in the log into a live trend with warning limits.
   Click **Track a number** in a line's details (or pick a field the log shows) on the
   Telemetry tab, name it, optionally scale it and set `warn_below` / `warn_above`, and pin
@@ -11,7 +19,9 @@
   (read-only, a rule of yours with the same id wins), and saves are checked against the
   file's revision so two windows cannot overwrite each other. New routes:
   `GET /api/metrics_config`, `POST /api/metrics_rules` (page token required).
-  Trends are per connection, window-local, 600 samples per rule.
+  Trends are per connection, window-local, 600 samples per rule. A hand-broken
+  `metrics.json` is reported and never overwritten by a save, and rules past the limit
+  of 32 (profile plus yours) stay listed so you can delete some.
 
 ## 0.3.1 (2026-10-28)
 
