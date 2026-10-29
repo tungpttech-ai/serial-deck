@@ -1341,12 +1341,13 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
         user_rules, problem, rev = metrics.load_user_rules()
         if problem:
             problems.append(problem)
-        merged = metrics.merge_rules(profile_rules, user_rules, enforce=False)
+        order = metrics.load_user_order()
+        merged = metrics.merge_rules(profile_rules, user_rules, enforce=False, order=order)
         if len(merged) > metrics.MAX_RULES:  # shown, not hidden: the user must be able to delete some
             problems.append(f"{len(merged)} rules after merging; the limit is {metrics.MAX_RULES}")
         mine = {rule["id"] for rule in user_rules}
         rules = [{**rule, "source": "user" if rule["id"] in mine else "profile"} for rule in merged]
-        return {"ok": True, "rules": rules, "problems": problems, "profile": self.profile_name,
+        return {"ok": True, "rules": rules, "problems": problems, "profile": self.profile_name, "order": order,
                 "path": str(metrics.metrics_path()), "rev": rev, "profile_supported": self.profile_supported}
 
     def _metrics_save(self, body: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
@@ -1357,7 +1358,7 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "base_rev must be text"}, HTTPStatus.BAD_REQUEST
         try:
             metrics.merge_rules(self._profile_metric_rules([]), metrics.clean_rules(body.get("rules")))
-            rev = metrics.save_user_rules(body.get("rules"), base_rev)
+            rev = metrics.save_user_rules(body.get("rules"), base_rev, order=body.get("order"))
         except metrics.MetricsError as exc:
             stale = str(exc) == "stale"
             return {"ok": False, "error": str(exc)}, HTTPStatus.CONFLICT if stale else HTTPStatus.BAD_REQUEST
@@ -2662,6 +2663,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <section class="mb-4 text-xs" aria-label="Custom metrics">
           <div class="flex items-center gap-2 mb-1">
             <span class="font-bold uppercase tracking-wider">Your metrics</span>
+            <button id="metricEditBtn" type="button" onclick="toggleMetricEdit()" class="tb-btn" aria-pressed="false" title="Reorder, switch on or off, choose chart or text, pin, edit or delete metrics"><i class="fa-solid fa-pen" aria-hidden="true"></i><span>Edit</span></button>
             <button id="metricAddBtn" type="button" onclick="addMetric()" class="tb-btn" title="Add a metric: the text before a number in the log, with a name, unit and limits"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add metric</span></button>
             <button id="metricReloadBtn" type="button" onclick="loadMetricRules()" class="tb-btn" title="Reload the rule files"><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>Reload</span></button>
             <span id="metricSource" class="mono text-[10px] text-brand-muted truncate"></span>
@@ -3202,6 +3204,30 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     // METRICS-DRAFT-END
 
+    // METRICS-MANAGE-BEGIN
+    // Pure helpers for the Edit panel: the rule list is the merged config, only your layer is ever saved.
+    function moveRule(ids, id, delta) {
+      const out = ids.slice(), i = out.indexOf(id), j = i + delta;
+      if (i < 0 || j < 0 || j >= out.length) return out;
+      [out[i], out[j]] = [out[j], out[i]];
+      return out;
+    }
+
+    function ruleOrderAfterMove(config, id, delta) { return moveRule(config.map(r => r.id), id, delta); }
+
+    // Your rules with one field changed. A profile rule becomes your copy (same id), which then overrides it.
+    function userRulesWithPatch(config, id, patch) {
+      const plain = ({ source, ...rule }) => rule;
+      const mine = config.filter(r => r.source === 'user').map(plain);
+      const target = config.find(r => r.id === id);
+      if (!target) return mine;
+      const next = Object.assign(plain(target), patch);
+      const at = mine.findIndex(r => r.id === id);
+      if (at >= 0) mine[at] = next; else mine.push(next);
+      return mine;
+    }
+    // METRICS-MANAGE-END
+
     // METRICS-ENGINE-BEGIN
     // ---- Custom metrics: a rule is the literal text before a number (see serial_deck/metrics.py) ----
     // Extraction is indexOf plus one fixed number grammar, scanned by hand: no user regex, so no rule can
@@ -3267,6 +3293,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function recordMetric(conn, rule, entry) {
+      if (rule.enabled === false) return;  // switched off: kept in the list, not tracked
       const v = extractMetric(rule, entry);
       if (v === null) return;
       const m = conn.metrics[rule.id] || (conn.metrics[rule.id] = { samples: [], last: null });
@@ -3285,7 +3312,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function setMetricRules(rules) {
       const before = new Map(metricRules.map(r => [r.id, JSON.stringify(r)]));
       const rescan = rules.filter(r => before.get(r.id) !== JSON.stringify(r));
-      const keep = new Set(rules.map(r => r.id));
+      const keep = new Set(rules.filter(r => r.enabled !== false).map(r => r.id));
       metricRules = rules;
       Object.keys(conns).forEach(id => {
         const conn = conns[id];
@@ -3318,7 +3345,8 @@ HTML_PAGE = """<!DOCTYPE html>
       const state = last === null ? 'ok' : metricState(rule, last);
       const badge = METRIC_BADGE[state];
       return { id: rule.id, label: rule.label, unit: rule.unit, source: source === 'profile' ? 'profile' : 'yours',
-               pin: rule.pin, state, badge: badge ? badge.text : '', icon: badge ? badge.icon : '',
+               pin: rule.pin, enabled: rule.enabled !== false, show: rule.show || 'both',
+               state, badge: badge ? badge.text : '', icon: badge ? badge.icon : '',
                valueText: last === null ? '--' : fmtMetric(last), values, count: values.length,
                min: values.length ? Math.min(...values) : null, max: values.length ? Math.max(...values) : null };
     }
@@ -3330,7 +3358,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     // Pinned rules for the status bar: [{id, text, state, badge, icon}], same model (and same numbers) as the cards.
     function metricPinList(rules, metrics, sources) {
-      return metricCardList(rules, metrics, sources).filter(m => m.pin).map(m => ({
+      return metricCardList(rules, metrics, sources).filter(m => m.pin && m.enabled).map(m => ({
         id: m.id, state: m.state, badge: m.badge, icon: m.icon,
         text: m.label + ' ' + m.valueText + (m.unit && m.count ? ' ' + m.unit : '') }));
     }
@@ -3342,6 +3370,7 @@ HTML_PAGE = """<!DOCTYPE html>
     let metricDraft = null;      // the rule being edited, or null
     let metricDraftIsNew = true;
     let metricNote = '';
+    let metricManage = false;    // the Edit panel (order, track, show, pin) is open
     const metricEl = id => document.getElementById(id);
 
     function mkEl(tag, cls, text) {
@@ -3375,12 +3404,13 @@ HTML_PAGE = """<!DOCTYPE html>
     function userRules() { return metricConfig.rules.filter(r => r.source === 'user').map(({ source, ...rule }) => rule); }
 
     // Save the whole user layer; `stale` means another window saved first: reload instead of overwriting.
-    async function saveUserRules(rules) {
+    async function saveUserRules(rules, order) {
       try {
         const res = await fetch('/api/metrics_rules', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN },
-          body: JSON.stringify({ rules, base_rev: metricConfig.rev })
+          body: JSON.stringify(order === undefined ? { rules, base_rev: metricConfig.rev }
+                                                   : { rules, base_rev: metricConfig.rev, order })
         });
         const out = await res.json();
         if (res.status === 409) { metricNote = 'The rules changed elsewhere; reloaded. Review and save again.'; await loadMetricRules(); return false; }
@@ -3423,7 +3453,8 @@ HTML_PAGE = """<!DOCTYPE html>
       return { id: metricDraft.id, label: metricEl('mdLabel').value.trim(), before: metricEl('mdBefore').value,
                tag: metricEl('mdTag').value.trim(), unit: metricEl('mdUnit').value.trim(),
                scale: num('mdScale') === null ? 1 : num('mdScale'), warn_below: num('mdWarnBelow'),
-               warn_above: num('mdWarnAbove'), pin: metricEl('mdPin').checked };
+               warn_above: num('mdWarnAbove'), pin: metricEl('mdPin').checked,
+               enabled: metricDraft.enabled !== false, show: metricDraft.show || 'both' };
     }
 
     function draftMatches(rule) {
@@ -3474,17 +3505,49 @@ HTML_PAGE = """<!DOCTYPE html>
       return row;
     }
 
-    function ruleRow(rule) {
-      const row = mkEl('div', 'flex items-center gap-2 py-0.5');
+    async function patchMetric(id, patch) {
+      if (await saveUserRules(userRulesWithPatch(metricConfig.rules, id, patch))) renderMetricsUi();
+    }
+
+    async function moveMetric(id, delta) {
+      if (await saveUserRules(userRules(), ruleOrderAfterMove(metricConfig.rules, id, delta))) renderMetricsUi();
+    }
+
+    function toggleMetricEdit() {
+      metricManage = !metricManage;
+      renderMetricsUi();
+    }
+
+    function ruleRow(rule, index, all) {
+      const row = mkEl('div', 'flex items-center gap-2 py-0.5 metric-row' + (rule.enabled === false ? ' opacity-60' : ''));
+      const up = mkBtn('\u25B2', () => moveMetric(rule.id, -1));
+      const down = mkBtn('\u25BC', () => moveMetric(rule.id, 1));
+      up.setAttribute('aria-label', 'Move ' + rule.label + ' up'); up.disabled = index === 0;
+      down.setAttribute('aria-label', 'Move ' + rule.label + ' down'); down.disabled = index === all.length - 1;
+      const check = (text, checked, onchange, title) => {
+        const wrap = mkEl('label', 'flex items-center gap-1 text-[11px]');
+        const box = mkEl('input'); box.type = 'checkbox'; box.checked = checked;
+        box.addEventListener('change', () => onchange(box.checked));
+        wrap.title = title;
+        wrap.append(box, mkEl('span', '', text));
+        return wrap;
+      };
+      const show = mkEl('select', 'bg-brand-surfaceAlt border border-brand-border rounded text-[11px] px-1');
+      show.setAttribute('aria-label', 'Show ' + rule.label + ' as');
+      [['both', 'Chart + text'], ['chart', 'Chart'], ['text', 'Text']].forEach(([value, text]) => {
+        const option = mkEl('option', '', text); option.value = value; show.appendChild(option);
+      });
+      show.value = rule.show || 'both';
+      show.addEventListener('change', () => patchMetric(rule.id, { show: show.value }));
       const source = rule.source === 'user' ? 'yours' : 'profile';
-      row.append(mkEl('span', 'tl-state', rule.label), mkEl('span', 'text-brand-muted mono', rule.before),
-                 mkEl('span', 'tl-src', source + (rule.unit ? ' · ' + rule.unit : '')));
+      row.append(up, down, mkEl('span', 'tl-state', rule.label), mkEl('span', 'text-brand-muted mono', rule.before),
+                 mkEl('span', 'tl-src', source + (rule.unit ? ' \u00b7 ' + rule.unit : '')),
+                 check('Track', rule.enabled !== false, on => patchMetric(rule.id, { enabled: on }), 'Switch tracking on or off'),
+                 show,
+                 check('Pin', !!rule.pin, on => patchMetric(rule.id, { pin: on }), 'Show in the status bar'));
       const plain = ({ source: _s, ...r }) => r;
-      if (rule.source === 'user') {
-        row.append(mkBtn('Edit', () => startMetricDraft(plain(rule), false)), mkBtn('Delete', () => deleteUserRule(rule.id), 'tb-btn tb-danger'));
-      } else {
-        row.append(mkBtn('Copy to mine', () => startMetricDraft(plain(rule), true)));
-      }
+      row.append(mkBtn('Edit', () => startMetricDraft(plain(rule), rule.source !== 'user')));
+      if (rule.source === 'user') row.append(mkBtn('Delete', () => deleteUserRule(rule.id), 'tb-btn tb-danger'));
       return row;
     }
 
@@ -3523,8 +3586,8 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     const SVG_NS = 'http://www.w3.org/2000/svg';
-    function sparkNode(values) {
-      const w = 140, h = 28;
+    function sparkNode(values, height) {
+      const w = 140, h = height || 28;
       const svg = document.createElementNS(SVG_NS, 'svg');
       svg.setAttribute('width', w); svg.setAttribute('height', h);
       svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'trend');
@@ -3551,16 +3614,24 @@ HTML_PAGE = """<!DOCTYPE html>
         badge.append(icon, document.createTextNode(' ' + m.badge));
         value.appendChild(badge);
       }
-      card.append(head, value, sparkNode(m.values),
-                  mkEl('div', 'mono text-[10px] text-brand-muted', m.count
-                    ? 'min ' + fmtMetric(m.min) + ' · max ' + fmtMetric(m.max) + ' · ' + m.count + ' samples'
+      if (m.show === 'chart') {  // chart only: no big number, the warning badge moves up beside the label
+        if (m.badge) head.appendChild(value.querySelector('.metric-badge'));
+        card.append(head, sparkNode(m.values, 48));
+      } else if (m.show === 'text') {
+        card.append(head, value);
+      } else {
+        card.append(head, value, sparkNode(m.values));
+      }
+      card.append(mkEl('div', 'mono text-[10px] text-brand-muted', m.count
+                    ? (m.show === 'chart' ? 'now ' + m.valueText + (m.unit ? ' ' + m.unit : '') + ' · ' : '') +
+                      'min ' + fmtMetric(m.min) + ' · max ' + fmtMetric(m.max) + ' · ' + m.count + ' samples'
                     : 'no value seen yet'));
       return card;
     }
 
     function renderMetrics() {
       const sources = new Map(metricConfig.rules.map(r => [r.id, r.source]));
-      metricEl('metricCards').replaceChildren(...metricCardList(metricRules, ensureConn(connId).metrics, sources).map(metricCard));
+      metricEl('metricCards').replaceChildren(...metricCardList(metricRules, ensureConn(connId).metrics, sources).filter(m => m.enabled).map(metricCard));
     }
 
     function renderPins() {
@@ -3590,8 +3661,12 @@ HTML_PAGE = """<!DOCTYPE html>
       const problems = metricEl('metricProblems');
       problems.replaceChildren(...metricConfig.problems.map(p => mkEl('div', 'text-brand-danger', p)));
       if (metricNote) problems.appendChild(mkEl('div', 'text-brand-muted', metricNote));
+      const edit = metricEl('metricEditBtn');
+      edit.setAttribute('aria-pressed', String(metricManage));
+      edit.querySelector('span').textContent = metricManage ? 'Done' : 'Edit';
+      metricEl('metricRulesList').classList.toggle('hidden', !metricManage);
       metricEl('metricRulesList').replaceChildren(...(metricConfig.rules.length ? metricConfig.rules.map(ruleRow)
-        : [mkEl('div', 'text-brand-muted', 'No metrics yet. Pick a field below, or open a log line and use "Track a number".')]));
+        : [mkEl('div', 'text-brand-muted', 'No metrics yet. Use Add metric, pick a field below, or open a log line and use "Track a number".')]));
       metricEl('metricSource').textContent = 'Your rules: ' + (metricConfig.path || 'metrics.json') +
         (metricConfig.profile_supported ? (metricConfig.profile ? ' · profile: ' + metricConfig.profile : ' · no profile selected')
           : ' · this window has no profile option, only your rules apply');

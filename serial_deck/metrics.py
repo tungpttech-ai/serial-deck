@@ -10,7 +10,10 @@ product) and the user's `metrics.json` (editable in the UI, wins on id clash).
 
     {"rules": [{"id": "heap_free", "label": "Free heap", "unit": "KB",
                 "before": "free=", "tag": "my_tag", "scale": 0.0009765625,
-                "warn_below": 64, "pin": true}]}
+                "warn_below": 64, "pin": true, "enabled": true, "show": "both"}]}
+
+`enabled` false keeps the rule but stops tracking it; `show` is chart, text or both.
+The order of the list is the order on screen.
 """
 
 from __future__ import annotations
@@ -31,7 +34,8 @@ except ImportError:
 ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 MAX_RULES = 32
 MAX_BYTES = 16 * 1024
-KEYS = ("id", "label", "before", "tag", "unit", "scale", "warn_below", "warn_above", "pin")
+KEYS = ("id", "label", "before", "tag", "unit", "scale", "warn_below", "warn_above", "pin", "enabled", "show")
+SHOWS = ("both", "chart", "text")
 REQUIRED = ("id", "label", "before")
 
 
@@ -86,6 +90,12 @@ def clean_rule(raw: Any) -> dict[str, Any]:
     pin = raw.get("pin", False)
     if not isinstance(pin, bool):
         raise MetricsError("pin must be true or false")
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise MetricsError("enabled must be true or false")
+    show = raw.get("show", "both")
+    if show not in SHOWS:
+        raise MetricsError(f"show must be one of {', '.join(SHOWS)}")
     return {
         "id": rule_id,
         "label": _text(raw, "label", 40, required=True),
@@ -96,6 +106,8 @@ def clean_rule(raw: Any) -> dict[str, Any]:
         "warn_below": _number(raw, "warn_below", None),
         "warn_above": _number(raw, "warn_above", None),
         "pin": pin,
+        "enabled": enabled,
+        "show": show,
     }
 
 
@@ -113,8 +125,19 @@ def clean_rules(raw: Any) -> list[dict[str, Any]]:
     return rules
 
 
+def clean_order(raw: Any) -> list[str]:
+    """The on-screen order: rule ids, first listed first. Unknown ids are harmless, so only the shape is checked."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 2 * MAX_RULES:
+        raise MetricsError(f"order must be a list of at most {2 * MAX_RULES} rule ids")
+    for item in raw:
+        if not isinstance(item, str) or not ID_RE.match(item):
+            raise MetricsError("order must list rule ids")
+    return list(raw)
+
 def merge_rules(profile_rules: list[dict[str, Any]], user_rules: list[dict[str, Any]],
-                enforce: bool = True) -> list[dict[str, Any]]:
+                enforce: bool = True, order: list[str] | None = None) -> list[dict[str, Any]]:
     """Profile order first; a user rule replaces the profile rule with the same id.
 
     `enforce=False` lists everything even past the limit, so a reader can show the
@@ -125,6 +148,11 @@ def merge_rules(profile_rules: list[dict[str, Any]], user_rules: list[dict[str, 
     merged.extend(r for r in user_rules if r["id"] in mine)
     if enforce and len(merged) > MAX_RULES:
         raise MetricsError(f"{len(merged)} rules after merging; the limit is {MAX_RULES}")
+    if order:  # listed ids first (in that order), everything else after, in the default order
+        by_id = {r["id"]: r for r in merged}
+        first = [by_id[i] for i in dict.fromkeys(order) if i in by_id]
+        listed = {r["id"] for r in first}
+        merged = first + [r for r in merged if r["id"] not in listed]
     return merged
 
 
@@ -161,11 +189,27 @@ def load_user_rules(path: Path | None = None) -> tuple[list[dict[str, Any]], str
         return [], f"{path.name}: {exc}", rev
 
 
-def save_user_rules(rules: list[dict[str, Any]], base_rev: str, path: Path | None = None) -> str:
-    """Write the user layer; `base_rev` must match the file as the caller last read it."""
+def load_user_order(path: Path | None = None) -> list[str]:
+    """The saved on-screen order; anything unreadable or malformed is no order."""
+    try:
+        doc = json.loads((path or metrics_path()).read_bytes().decode("utf-8"))
+        return clean_order(doc.get("order")) if isinstance(doc, dict) else []
+    except (OSError, ValueError):
+        return []
+
+def save_user_rules(rules: list[dict[str, Any]], base_rev: str, path: Path | None = None,
+                    order: list[str] | None = None) -> str:
+    """Write the user layer; `base_rev` must match the file as the caller last read it.
+
+    `order` None keeps the order already in the file.
+    """
     path = path or metrics_path()
     cleaned = clean_rules(rules)
-    text = json.dumps({"rules": cleaned}, indent=2, ensure_ascii=False) + "\n"
+    kept = clean_order(order) if order is not None else load_user_order(path)
+    doc: dict[str, Any] = {"rules": cleaned}
+    if kept:
+        doc["order"] = kept
+    text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
     if len(text.encode("utf-8")) > MAX_BYTES:
         raise MetricsError(f"rules need more than {MAX_BYTES // 1024} KiB")
     try:

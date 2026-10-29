@@ -314,12 +314,27 @@ class ConsoleP2Test(unittest.TestCase):
 
 
 JS_METRIC_CASES = r"""
-const R = o => Object.assign({id: 'r', label: 'R', before: '', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false}, o);
+const R = o => Object.assign({id: 'r', label: 'R', before: '', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false, enabled: true, show: 'both'}, o);
 const L = (text, level = 'info') => ({text, level, time: '12:00:00.000'});
 const N = (text, n, level = 'plain') => Object.assign(L(text, level), {_n: n});
 const results = {};
 const line = 'I (1) sys_monitor: heap: internal_free=190464 internal_min=1';
 results.heap = extractMetric(R({before: 'internal_free=', tag: 'sys_monitor'}), L(line));
+{
+  const off = {metrics: {}};
+  noteMetrics(off, N('a=1', 1)); // no rules yet: nothing
+  setMetricRules([R({id: 'on', before: 'a='}), R({id: 'off', before: 'a=', enabled: false})]);
+  noteMetrics(off, N('a=5', 2));
+  results.disabled = [Object.keys(off.metrics), off.metrics.on && off.metrics.on.last];
+  const early = {metrics: {}, logsBuffer: [N('a=7', 1)]};
+  conns.early = early;
+  setMetricRules([R({id: 'on', before: 'a='}), R({id: 'off', before: 'a=', enabled: true})]);
+  results.enabledLater = Object.keys(early.metrics).sort();
+  setMetricRules([R({id: 'on', before: 'a='}), R({id: 'off', before: 'a=', enabled: false})]);
+  results.disabledLater = Object.keys(early.metrics).sort();
+  delete conns.early;
+  setMetricRules([]);
+}
 results.heapKb = extractMetric(R({before: 'internal_free=', tag: 'sys_monitor', scale: 1 / 1024}), L(line));
 results.otherTag = extractMetric(R({before: 'internal_free=', tag: 'wifi'}), L(line));
 results.plain = extractMetric(R({before: 'temp='}), L('temp=25', 'plain'));
@@ -416,6 +431,11 @@ class MetricsEngineTest(unittest.TestCase):
         self.assertEqual(self.r["heap"], 190464)
         self.assertEqual(self.r["heapKb"], 186)
 
+    def test_a_switched_off_rule_records_nothing_and_loses_its_samples_when_switched_off(self):
+        self.assertEqual(self.r["disabled"], [["on"], 5])
+        self.assertEqual(self.r["enabledLater"], ["off"])  # switching on rescans the buffer for that rule only
+        self.assertEqual(self.r["disabledLater"], [])      # switching off drops its samples
+
     def test_tag_must_match_and_untagged_rules_read_plain_lines(self):
         self.assertIsNone(self.r["otherTag"])
         self.assertIsNone(self.r["taggedOnPlain"])
@@ -509,6 +529,16 @@ results.fieldDraft = [draftFromField({before: 'internal_free=', tag: 'sys_monito
   draftFromField({before: 'a = ', tag: '', count: 1, last: 1}, null)].map(d => [d.id, d.label, d.before, d.tag]);
 results.blank = draftBlank(new Set(['metric', 'metric_2']));
 results.blankNoSet = draftBlank(null);
+const MR = (id, source, o) => Object.assign({id, label: id.toUpperCase(), before: id + '=', tag: '', unit: '', scale: 1,
+  warn_below: null, warn_above: null, pin: false, enabled: true, show: 'both', source}, o);
+const cfg = [MR('a', 'profile'), MR('b', 'user'), MR('c', 'profile', {pin: true})];
+results.moves = [moveRule(['a','b','c'], 'b', -1), moveRule(['a','b','c'], 'a', -1), moveRule(['a','b','c'], 'c', 1),
+  moveRule(['a','b','c'], 'zz', 1), moveRule(['a','b','c'], 'a', 1)];
+results.patchUser = userRulesWithPatch(cfg, 'b', {enabled: false}).map(r => [r.id, r.enabled, 'source' in r]);
+results.patchProfile = userRulesWithPatch(cfg, 'a', {show: 'chart'}).map(r => [r.id, r.show, r.enabled, 'source' in r]);
+results.patchKeepsOthers = userRulesWithPatch(cfg, 'c', {pin: false}).map(r => [r.id, r.pin]);
+results.patchMissing = userRulesWithPatch(cfg, 'nope', {pin: true}).map(r => r.id);
+results.orderIds = ruleOrderAfterMove(cfg, 'c', -1);
 console.log(JSON.stringify(results));
 """
 
@@ -543,9 +573,9 @@ class MetricsEditorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.script = page_script()
-        if "METRICS-DRAFT-BEGIN" not in cls.script:
-            raise AssertionError("the page has no draft/discovery block yet")
-        cls.r = run_page_js(cls.script, ("METRICS-ENGINE", "METRICS-DRAFT"), JS_EDITOR_CASES)
+        if "METRICS-MANAGE-BEGIN" not in cls.script:
+            raise AssertionError("the page has no manage block yet")
+        cls.r = run_page_js(cls.script, ("METRICS-ENGINE", "METRICS-DRAFT", "METRICS-MANAGE"), JS_EDITOR_CASES)
 
     def test_draft_takes_the_key_text_tag_and_names_from_the_line(self):
         d = self.r["heap"]
@@ -568,6 +598,21 @@ class MetricsEditorTest(unittest.TestCase):
         self.assertIn("metricDraft.autoId", save)
         self.assertIn("ruleIdFromKey(", save)
         self.assertIn(".focus()", ui.split("function startMetricDraft(", 1)[1].split("\n    }\n", 1)[0])
+
+    def test_moving_a_rule_swaps_it_with_its_neighbour_and_stops_at_the_ends(self):
+        up, top, bottom, unknown, down = self.r["moves"]
+        self.assertEqual(up, ["b", "a", "c"])
+        self.assertEqual(top, ["a", "b", "c"])
+        self.assertEqual(bottom, ["a", "b", "c"])
+        self.assertEqual(unknown, ["a", "b", "c"])
+        self.assertEqual(down, ["b", "a", "c"])
+
+    def test_changing_a_flag_edits_your_rule_and_copies_a_profile_rule_so_it_can_be_overridden(self):
+        self.assertEqual(self.r["patchUser"], [["b", False, False]])  # only your rules are saved; no "source" key
+        self.assertEqual(self.r["patchProfile"], [["b", "both", True, False], ["a", "chart", True, False]])
+        self.assertEqual(self.r["patchKeepsOthers"], [["b", False], ["c", False]])
+        self.assertEqual(self.r["patchMissing"], ["b"])
+        self.assertEqual(self.r["orderIds"], ["a", "c", "b"])
 
     def test_draft_never_includes_timestamps_or_the_tick(self):
         self.assertIsNone(self.r["tickNotOffered"])
@@ -635,7 +680,7 @@ class MetricsEditorTest(unittest.TestCase):
 
 
 JS_CARD_CASES = r"""
-const R = o => Object.assign({id: 'r', label: 'R', before: 'x=', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false}, o);
+const R = o => Object.assign({id: 'r', label: 'R', before: 'x=', tag: '', unit: '', scale: 1, warn_below: null, warn_above: null, pin: false, enabled: true, show: 'both'}, o);
 const M = (...vs) => ({samples: vs.map((v, i) => ({n: i + 1, time: 't', v})), last: vs[vs.length - 1]});
 const results = {};
 results.fmt = [186, 175.8046875, 0.5, 0.0123, 190464.4, -3, 0, 99.999, 1000.4, 2.5, 12.25, -0.0456].map(fmtMetric);
@@ -649,6 +694,10 @@ results.stale = metricCardList(rules, {a: M(1), gone: M(9)}, new Map([['a', 'use
 const c1 = {a: M(1, 2)}, c2 = {a: M(7)};
 results.twoConnections = [metricCardList(rules, c1, new Map()).map(c => c.valueText), metricCardList(rules, c2, new Map()).map(c => c.valueText)];
 results.order = metricCardList([R({id: 'z'}), R({id: 'a'})], {}, new Map()).map(c => c.id);
+results.shows = ['both', 'chart', 'text', undefined].map(show => metricCardModel(R({show}), M(1, 2), 'user').show);
+results.offCard = metricCardModel(R({enabled: false}), M(1), 'user').enabled;
+results.onCard = metricCardModel(R({}), M(1), 'user').enabled;
+results.pinsSkipOff = metricPinList([R({id: 'p', pin: true, enabled: false}), R({id: 'q', pin: true})], {q: M(3)}, new Map()).map(p => p.id);
 console.log(JSON.stringify(results));
 """
 
@@ -687,6 +736,11 @@ class MetricsUiTest(unittest.TestCase):
     def test_card_list_follows_the_rules_so_a_deleted_rules_card_disappears(self):
         self.assertEqual(self.r["stale"], [["a", 1, "yours"], ["b", 0, "yours"]])  # "gone" has samples but no rule
         self.assertEqual(self.r["order"], ["z", "a"])
+
+    def test_show_mode_and_enabled_flow_into_the_card_model(self):
+        self.assertEqual(self.r["shows"], ["both", "chart", "text", "both"])  # missing -> both
+        self.assertEqual((self.r["offCard"], self.r["onCard"]), (False, True))
+        self.assertEqual(self.r["pinsSkipOff"], ["q"])  # a switched-off rule is not pinned
 
     def test_each_connection_shows_its_own_samples(self):
         self.assertEqual(self.r["twoConnections"], [["2", "--"], ["7", "--"]])

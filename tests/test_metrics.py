@@ -19,7 +19,16 @@ class CleanRuleTest(unittest.TestCase):
     def test_valid_rule_defaults(self):
         got = clean_rule(rule())
         self.assertEqual(got, {"id": "heap_free", "label": "Free", "before": "free=", "unit": "", "tag": "",
-                               "scale": 1.0, "warn_below": None, "warn_above": None, "pin": False})
+                               "scale": 1.0, "warn_below": None, "warn_above": None, "pin": False,
+                               "enabled": True, "show": "both"})
+
+    def test_enabled_and_show_are_kept_and_validated(self):
+        got = clean_rule(rule(enabled=False, show="chart"))
+        self.assertEqual((got["enabled"], got["show"]), (False, "chart"))
+        self.assertEqual(clean_rule(rule(show="text"))["show"], "text")
+        for bad in (rule(show="pie"), rule(show=1), rule(enabled="yes"), rule(enabled=0)):
+            with self.assertRaises(MetricsError, msg=bad):
+                clean_rule(bad)
 
     def test_valid_rule_keeps_every_field(self):
         got = clean_rule(rule(unit="KB", tag="sys", scale=0.5, warn_below=1, warn_above=9.5, pin=True))
@@ -104,6 +113,39 @@ class MergeTest(unittest.TestCase):
         user = clean_rules([rule(id="p0", label="mine")])
         self.assertEqual(len(merge_rules(profile, user)), 32)
 
+
+class OrderTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / "metrics.json"
+
+    def test_order_puts_listed_ids_first_and_keeps_the_rest_in_default_order(self):
+        profile = clean_rules([rule(id="a"), rule(id="b")])
+        user = clean_rules([rule(id="c")])
+        ids = lambda order: [r["id"] for r in merge_rules(profile, user, order=order)]
+        self.assertEqual(ids(None), ["a", "b", "c"])
+        self.assertEqual(ids(["c", "a"]), ["c", "a", "b"])
+        self.assertEqual(ids(["zzz", "b", "b"]), ["b", "a", "c"])  # unknown and repeated ids are ignored
+
+    def test_clean_order_checks_ids_and_size(self):
+        self.assertEqual(metrics.clean_order(["a", "b"]), ["a", "b"])
+        self.assertEqual(metrics.clean_order(None), [])
+        for bad in ("a", [1], ["Bad"], ["a"] * 65, [["a"]]):
+            with self.assertRaises(MetricsError, msg=bad):
+                metrics.clean_order(bad)
+
+    def test_save_stores_the_order_and_load_reads_it_back(self):
+        rev = metrics.save_user_rules([rule(id="a"), rule(id="b")], "", self.path, order=["b", "a"])
+        self.assertEqual(metrics.load_user_order(self.path), ["b", "a"])
+        self.assertEqual([r["id"] for r in metrics.load_user_rules(self.path)[0]], ["a", "b"])  # rules stay as saved
+        metrics.save_user_rules([rule(id="a")], rev, self.path)  # no order given: the old one is kept
+        self.assertEqual(metrics.load_user_order(self.path), ["b", "a"])
+
+    def test_a_bad_order_in_the_file_is_ignored_not_fatal(self):
+        self.path.write_text(json.dumps({"rules": [rule(id="a")], "order": "nope"}), encoding="utf-8")
+        self.assertEqual(metrics.load_user_order(self.path), [])
+        self.assertEqual(metrics.load_user_rules(self.path)[1], "")  # the rules still load
 
 class FileLayerTest(unittest.TestCase):
     def setUp(self):

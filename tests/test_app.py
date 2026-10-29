@@ -492,6 +492,32 @@ class MetricsApiTest(unittest.TestCase):
         self.assertIn("unknown rule keys", out["error"])
         self.assertEqual(self.metrics_file.read_bytes(), before)
 
+    def test_order_is_saved_with_the_rules_and_applied_to_profile_rules_too(self):
+        self.write_profile("board", [self.rule("a"), self.rule("b")])
+        backend = self.backend("board")
+        data = self.get_config(backend)
+        send = lambda body: self.call(backend, "POST", "/api/metrics_rules", body,
+                                      {"Content-Type": "application/json", "X-Deck-Action": backend.handler.action_token})
+        status, out = send({"rules": [self.rule("c")], "base_rev": data["rev"], "order": ["c", "b", "a"]})
+        self.assertEqual(status, 200)
+        data = self.get_config(backend)
+        self.assertEqual([r["id"] for r in data["rules"]], ["c", "b", "a"])
+        self.assertEqual(data["order"], ["c", "b", "a"])
+        status, _ = send({"rules": [self.rule("c")], "base_rev": data["rev"]})  # no order: keeps it
+        self.assertEqual(status, 200)
+        self.assertEqual([r["id"] for r in self.get_config(backend)["rules"]], ["c", "b", "a"])
+
+    def test_a_malformed_order_is_a_400_and_the_file_is_unchanged(self):
+        backend = self.backend()
+        rev = metrics.save_user_rules([self.rule("a")], "", self.metrics_file)
+        before = self.metrics_file.read_bytes()
+        status, out = self.call(backend, "POST", "/api/metrics_rules",
+                                {"rules": [self.rule("a")], "base_rev": rev, "order": "nope"},
+                                {"Content-Type": "application/json", "X-Deck-Action": backend.handler.action_token})
+        self.assertEqual(status, 400)
+        self.assertIn("order", out["error"])
+        self.assertEqual(self.metrics_file.read_bytes(), before)
+
     def test_config_without_profile_argument_reports_unsupported(self):
         data = self.get_config(self.backend())
         self.assertEqual((data["rules"], data["profile"], data["profile_supported"], data["rev"]), ([], "", False, ""))

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 (2026-10-29)
+
+- Telemetry tab: an **Edit** button opens the metric list for managing it in place.
+  Each row has move up/down, **Track** (switch a metric off without deleting it: nothing
+  is recorded and its card disappears), **Chart + text / Chart / Text** display, **Pin**
+  to the status bar, Edit and Delete. A profile rule you change becomes your own copy
+  with the same id, so the profile file is never touched. **Add metric** opens a blank
+  form.
+- `metrics.json` rules gain optional `enabled` (default true) and `show` (`both`,
+  `chart`, `text`; default `both`), and the file gains an optional top-level `order`
+  list of rule ids. Older files and older Serial Deck readers of newer files still
+  load: missing fields take the defaults.
+- `GET /api/metrics_config` returns the merged rules already in the saved order, plus
+  `order`; `POST /api/metrics_rules` accepts an optional `order` (omitted keeps the
+  saved one).
+
 ## 0.4.2 (2026-10-29)
 
 - Telemetry tab: an **Add metric** button opens an empty rule form, so a metric can be

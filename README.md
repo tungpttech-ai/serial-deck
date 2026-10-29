@@ -265,6 +265,12 @@ and an optional exponent (`-3`, `2.5`, `1e3`). The first occurrence of the text 
 followed by a number is used. Echoed `TX>` lines and symbolized `[ELF]` lines are
 never measured. There is no regex on purpose, so no rule can slow the page down.
 
+Press **Edit** on the Telemetry tab to manage the list: reorder with the arrows, switch
+**Track** on or off, choose **Chart + text**, **Chart** or **Text**, **Pin** to the status
+bar, edit or delete. A profile rule you change becomes your own copy (same id) and
+overrides it. In `metrics.json` these are the optional rule keys `enabled` and `show`
+and the top-level `order` list.
+
 A **device profile** can ship rules too: add a `metrics` list (same fields) to the
 profile JSON. Profile rules are read-only in the dashboard (use *Copy to mine* to
 change one); a rule of yours with the same `id` replaces it. Limits: 32 rules after
