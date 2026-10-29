@@ -2662,6 +2662,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <section class="mb-4 text-xs" aria-label="Custom metrics">
           <div class="flex items-center gap-2 mb-1">
             <span class="font-bold uppercase tracking-wider">Your metrics</span>
+            <button id="metricAddBtn" type="button" onclick="addMetric()" class="tb-btn" title="Add a metric: the text before a number in the log, with a name, unit and limits"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add metric</span></button>
             <button id="metricReloadBtn" type="button" onclick="loadMetricRules()" class="tb-btn" title="Reload the rule files"><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>Reload</span></button>
             <span id="metricSource" class="mono text-[10px] text-brand-muted truncate"></span>
           </div>
@@ -3194,6 +3195,11 @@ HTML_PAGE = """<!DOCTYPE html>
       return { id: ruleIdFromKey(key, takenIds), label: key.slice(0, 40), before: field.before, tag: field.tag,
                unit: '', scale: 1, warn_below: null, warn_above: null, pin: false };
     }
+    // An empty rule for "Add metric": the id is made from the label when it is saved (autoId).
+    function draftBlank(takenIds) {
+      return { id: ruleIdFromKey('metric', takenIds), label: '', before: '', tag: '', unit: '', scale: 1,
+               warn_below: null, warn_above: null, pin: false, autoId: true };
+    }
     // METRICS-DRAFT-END
 
     // METRICS-ENGINE-BEGIN
@@ -3398,6 +3404,12 @@ HTML_PAGE = """<!DOCTYPE html>
       renderMetricsUi();
       const form = metricEl('metricEditor');
       if (form.scrollIntoView) form.scrollIntoView({ block: 'nearest' });
+      const first = metricEl(metricDraft.autoId ? 'mdLabel' : 'mdBefore');
+      if (first && first.focus) first.focus();
+    }
+
+    function addMetric() {
+      startMetricDraft(draftBlank(new Set(metricConfig.rules.map(r => r.id))), true);
     }
 
     function trackNumber(entry, offset) {
@@ -3433,6 +3445,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
     async function saveDraft() {
       const rule = readDraftForm();
+      if (metricDraft.autoId) {  // a new rule: name it after what the user typed
+        rule.id = ruleIdFromKey(rule.label || rule.before.replace(/[\\s=:]+$/, '') || 'metric',
+                                new Set(metricConfig.rules.map(r => r.id)));
+      }
       const mine = userRules().filter(r => r.id !== rule.id);
       const overrides = metricConfig.rules.find(r => r.id === rule.id && r.source === 'profile');
       if (await saveUserRules(mine.concat([rule]))) {

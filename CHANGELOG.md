@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 (2026-10-29)
+
+- Telemetry tab: an **Add metric** button opens an empty rule form, so a metric can be
+  set up without first finding its line in the log. Type the label, the text before the
+  number, the unit and limits; the rule id is made from the label. A missing label or
+  text is reported and the form keeps what you typed.
+
 ## 0.4.1 (2026-10-29)
 
 - `serial-deck-app` accepts `--profile <name>`, like `serial-deck-web`: the profile's

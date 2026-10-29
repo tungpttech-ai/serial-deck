@@ -507,6 +507,8 @@ results.fieldDraft = [draftFromField({before: 'internal_free=', tag: 'sys_monito
   draftFromField({before: 'temp: ', tag: '', count: 1, last: 1}, null),
   draftFromField({before: 'temp: ', tag: '', count: 1, last: 1}, new Set(['temp', 'temp_2'])),
   draftFromField({before: 'a = ', tag: '', count: 1, last: 1}, null)].map(d => [d.id, d.label, d.before, d.tag]);
+results.blank = draftBlank(new Set(['metric', 'metric_2']));
+results.blankNoSet = draftBlank(null);
 console.log(JSON.stringify(results));
 """
 
@@ -549,6 +551,23 @@ class MetricsEditorTest(unittest.TestCase):
         d = self.r["heap"]
         self.assertEqual((d["before"], d["tag"], d["id"], d["label"]), ("internal_free=", "sys_monitor", "internal_free", "internal_free"))
         self.assertEqual((d["unit"], d["scale"], d["warn_below"], d["warn_above"], d["pin"]), ("", 1, None, None, False))
+
+    def test_a_blank_draft_has_every_field_empty_and_asks_for_an_id_from_the_label(self):
+        d = self.r["blank"]
+        self.assertEqual((d["label"], d["before"], d["tag"], d["unit"], d["scale"], d["warn_below"], d["warn_above"], d["pin"]),
+                         ("", "", "", "", 1, None, None, False))
+        self.assertTrue(d["autoId"])
+        self.assertEqual(self.r["blankNoSet"]["id"], "metric")
+
+    def test_the_page_has_an_add_button_that_opens_a_blank_form_and_save_names_the_rule_from_its_label(self):
+        page = self.script
+        self.assertIn("id=\"metricAddBtn\"", served_page())
+        ui = page_block(page, "METRICS-UI")
+        self.assertIn("draftBlank(", ui.split("function addMetric() {", 1)[1].split("\n    }\n", 1)[0])
+        save = ui.split("async function saveDraft() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("metricDraft.autoId", save)
+        self.assertIn("ruleIdFromKey(", save)
+        self.assertIn(".focus()", ui.split("function startMetricDraft(", 1)[1].split("\n    }\n", 1)[0])
 
     def test_draft_never_includes_timestamps_or_the_tick(self):
         self.assertIsNone(self.r["tickNotOffered"])
