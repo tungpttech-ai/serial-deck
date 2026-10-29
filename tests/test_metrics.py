@@ -94,6 +94,11 @@ class MergeTest(unittest.TestCase):
         with self.assertRaisesRegex(MetricsError, "32"):
             merge_rules(profile, user)
 
+    def test_merge_can_list_everything_when_told_not_to_enforce_the_limit(self):
+        profile = clean_rules([rule(id=f"p{i}") for i in range(20)])
+        user = clean_rules([rule(id=f"u{i}") for i in range(13)])
+        self.assertEqual(len(merge_rules(profile, user, enforce=False)), 33)
+
     def test_override_does_not_count_twice(self):
         profile = clean_rules([rule(id=f"p{i}") for i in range(32)])
         user = clean_rules([rule(id="p0", label="mine")])
@@ -184,6 +189,20 @@ class FileLayerTest(unittest.TestCase):
         with self.assertRaises(MetricsError):
             metrics.save_user_rules([rule(regex="x")], "", self.path)
         self.assertFalse(self.path.exists())
+
+    def test_save_over_an_unreadable_file_is_refused_so_hand_edits_are_not_lost(self):
+        self.path.write_text(json.dumps({"rules": [rule(id="a"), dict(rule(id="b"), colour="red")]}), encoding="utf-8")
+        before = self.path.read_bytes()
+        rev = metrics.load_user_rules(self.path)[2]
+        with self.assertRaisesRegex(MetricsError, "unknown rule keys"):
+            metrics.save_user_rules([rule(id="new")], rev, self.path)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_huge_json_integers_are_a_rule_error_not_an_exception(self):
+        huge = int("1" + "0" * 400)
+        for over in ({"warn_above": huge}, {"warn_below": -huge}, {"scale": huge}):
+            with self.assertRaisesRegex(MetricsError, "finite"):
+                clean_rule(rule(**over))
 
     @unittest.skipUnless(os.name == "posix", "owner-only mode is a POSIX concept")
     def test_saved_file_is_owner_only(self):

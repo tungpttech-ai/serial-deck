@@ -1325,25 +1325,25 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
         self._reject(HTTPStatus.FORBIDDEN, "request Host does not name this dashboard")
         return False
 
+    def _profile_metric_rules(self, problems: list[str]) -> list[dict[str, Any]]:
+        if not self.profile_name:
+            return []
+        found, broken = profiles.load_all()
+        if self.profile_name in found:
+            return found[self.profile_name].get("metrics", [])
+        problems.append(f"profile {self.profile_name}: {broken.get(f'{self.profile_name}.json', 'no such profile')}")
+        return []
+
     def _metrics_config(self) -> dict[str, Any]:
         """Both rule layers merged, read from disk on every call; a bad layer is a problem, never an error."""
         problems: list[str] = []
-        profile_rules: list[dict[str, Any]] = []
-        if self.profile_name:
-            found, broken = profiles.load_all()
-            if self.profile_name in found:
-                profile_rules = found[self.profile_name].get("metrics", [])
-            else:
-                reason = broken.get(f"{self.profile_name}.json", "no such profile")
-                problems.append(f"profile {self.profile_name}: {reason}")
+        profile_rules = self._profile_metric_rules(problems)
         user_rules, problem, rev = metrics.load_user_rules()
         if problem:
             problems.append(problem)
-        try:
-            merged = metrics.merge_rules(profile_rules, user_rules)
-        except metrics.MetricsError as exc:
-            problems.append(str(exc))
-            merged, user_rules = profile_rules, []
+        merged = metrics.merge_rules(profile_rules, user_rules, enforce=False)
+        if len(merged) > metrics.MAX_RULES:  # shown, not hidden: the user must be able to delete some
+            problems.append(f"{len(merged)} rules after merging; the limit is {metrics.MAX_RULES}")
         mine = {rule["id"] for rule in user_rules}
         rules = [{**rule, "source": "user" if rule["id"] in mine else "profile"} for rule in merged]
         return {"ok": True, "rules": rules, "problems": problems, "profile": self.profile_name,
@@ -1356,6 +1356,7 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
         if not isinstance(base_rev, str):
             return {"ok": False, "error": "base_rev must be text"}, HTTPStatus.BAD_REQUEST
         try:
+            metrics.merge_rules(self._profile_metric_rules([]), metrics.clean_rules(body.get("rules")))
             rev = metrics.save_user_rules(body.get("rules"), base_rev)
         except metrics.MetricsError as exc:
             stale = str(exc) == "stale"
@@ -3392,6 +3393,7 @@ HTML_PAGE = """<!DOCTYPE html>
       metricDraft = Object.assign({}, rule);
       metricDraftIsNew = isNew;
       metricNote = '';
+      metricEl('metricEditor').replaceChildren();  // the new draft replaces the one on screen: do not keep that
       switchTab('inspector');
       renderMetricsUi();
       const form = metricEl('metricEditor');
@@ -3560,7 +3562,15 @@ HTML_PAGE = """<!DOCTYPE html>
       box.classList.toggle('hidden', !pins.length);
     }
 
+    // The form is rebuilt from metricDraft: copy what was typed back first, or a failed save,
+    // a 409 or a tab switch would wipe it.
+    function keepTypedDraft() {
+      if (!metricDraft || !metricEl('mdLabel')) return;
+      metricDraft = Object.assign({}, metricDraft, readDraftForm());
+    }
+
     function renderMetricsUi() {
+      keepTypedDraft();
       const problems = metricEl('metricProblems');
       problems.replaceChildren(...metricConfig.problems.map(p => mkEl('div', 'text-brand-danger', p)));
       if (metricNote) problems.appendChild(mkEl('div', 'text-brand-muted', metricNote));

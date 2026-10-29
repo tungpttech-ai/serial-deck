@@ -58,7 +58,11 @@ def _number(raw: dict[str, Any], key: str, default: float | None) -> float | Non
     value = raw[key]
     if type(value) not in (int, float):  # bool is an int subclass: refuse it too
         raise MetricsError(f"{key} must be a number")
-    if not math.isfinite(value):
+    try:
+        finite = math.isfinite(value) and math.isfinite(float(value))
+    except OverflowError:  # a JSON integer too big for a float
+        finite = False
+    if not finite:
         raise MetricsError(f"{key} must be finite")
     return value
 
@@ -109,12 +113,17 @@ def clean_rules(raw: Any) -> list[dict[str, Any]]:
     return rules
 
 
-def merge_rules(profile_rules: list[dict[str, Any]], user_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Profile order first; a user rule replaces the profile rule with the same id."""
+def merge_rules(profile_rules: list[dict[str, Any]], user_rules: list[dict[str, Any]],
+                enforce: bool = True) -> list[dict[str, Any]]:
+    """Profile order first; a user rule replaces the profile rule with the same id.
+
+    `enforce=False` lists everything even past the limit, so a reader can show the
+    user's rules (and the problem) instead of hiding them.
+    """
     mine = {r["id"]: r for r in user_rules}
     merged = [mine.pop(r["id"], r) for r in profile_rules]
     merged.extend(r for r in user_rules if r["id"] in mine)
-    if len(merged) > MAX_RULES:
+    if enforce and len(merged) > MAX_RULES:
         raise MetricsError(f"{len(merged)} rules after merging; the limit is {MAX_RULES}")
     return merged
 
@@ -165,5 +174,9 @@ def save_user_rules(rules: list[dict[str, Any]], base_rev: str, path: Path | Non
         current = ""
     if current != base_rev:
         raise MetricsError("stale")
+    if current:  # never overwrite a file we could not read: it may hold hand edits
+        _, problem, _ = load_user_rules(path)
+        if problem:
+            raise MetricsError(f"{problem}; fix or delete the file first")
     write_private(path, text)
     return _rev(text.encode("utf-8"))

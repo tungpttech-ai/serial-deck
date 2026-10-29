@@ -464,6 +464,34 @@ class MetricsApiTest(unittest.TestCase):
         self.assertEqual((data["problems"], data["profile"], data["rev"], data["path"], data["profile_supported"]),
                          ([], "board", rev, str(self.metrics_file), True))
 
+    def test_config_over_the_merged_limit_still_lists_the_user_rules_so_a_save_keeps_them(self):
+        self.write_profile("board", [self.rule(f"p{i}") for i in range(8)])
+        metrics.save_user_rules([self.rule(f"u{i}") for i in range(25)], "", self.metrics_file)
+        data = self.get_config(self.backend("board"))
+        self.assertEqual(sum(r["source"] == "user" for r in data["rules"]), 25)
+        self.assertEqual(len(data["rules"]), 33)
+        self.assertTrue(any("33 rules" in p for p in data["problems"]))
+
+    def test_save_that_would_exceed_the_merged_limit_is_refused(self):
+        self.write_profile("board", [self.rule(f"p{i}") for i in range(8)])
+        rev = metrics.save_user_rules([self.rule(f"u{i}") for i in range(24)], "", self.metrics_file)
+        backend = self.backend("board")
+        status, data = self.post_rules(backend, [self.rule(f"u{i}") for i in range(25)], rev)
+        self.assertEqual(status, 400)
+        self.assertIn("33", data["error"])
+        self.assertEqual(metrics.load_user_rules(self.metrics_file)[2], rev)
+
+    def test_save_over_a_hand_broken_file_is_refused(self):
+        self.metrics_file.write_text('{"rules": [{"id": "a", "label": "A", "before": "a=", "colour": "x"}]}',
+                                     encoding="utf-8")
+        backend = self.backend()
+        data = self.get_config(backend)
+        before = self.metrics_file.read_bytes()
+        status, out = self.post_rules(backend, [self.rule("new")], data["rev"])
+        self.assertEqual(status, 400)
+        self.assertIn("unknown rule keys", out["error"])
+        self.assertEqual(self.metrics_file.read_bytes(), before)
+
     def test_config_without_profile_argument_reports_unsupported(self):
         data = self.get_config(self.backend())
         self.assertEqual((data["rules"], data["profile"], data["profile_supported"], data["rev"]), ([], "", False, ""))
@@ -488,8 +516,8 @@ class MetricsApiTest(unittest.TestCase):
         self.write_profile("board", [self.rule(f"p{i}") for i in range(20)])
         metrics.save_user_rules([self.rule(f"u{i}") for i in range(13)], "", self.metrics_file)
         data = self.get_config(self.backend("board"))
-        self.assertEqual(len(data["rules"]), 20)
-        self.assertTrue(all(r["source"] == "profile" for r in data["rules"]))
+        self.assertEqual(len(data["rules"]), 33)  # all listed, so the user can delete some
+        self.assertEqual(sum(r["source"] == "user" for r in data["rules"]), 13)
         self.assertIn("32", data["problems"][0])
 
     def test_post_missing_token_refused(self):

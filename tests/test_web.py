@@ -593,6 +593,16 @@ class MetricsEditorTest(unittest.TestCase):
         self.assertIn("Track a number", detail)
         self.assertIn("numberSpans(entry.text)", detail)
 
+    def test_typed_values_survive_a_failed_save_and_a_redraw(self):
+        ui = page_block(self.script, "METRICS-UI")
+        # renderMetricsUi rebuilds the form from metricDraft, so it must first copy what was typed back.
+        render = ui.split("function renderMetricsUi() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("keepTypedDraft()", render)
+        keep = ui.split("function keepTypedDraft() {", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("metricEl('mdLabel')", keep)
+        self.assertIn("if (!metricDraft || !metricEl('mdLabel')) return", keep)  # no form on screen: nothing to keep
+        self.assertIn("metricDraft = Object.assign({}, metricDraft, readDraftForm())", keep)
+
     def test_save_posts_json_with_the_page_token_and_base_rev_and_handles_stale(self):
         save = self.script.split("async function saveUserRules(", 1)[1].split("\n    }\n", 1)[0]
         for needle in ("'/api/metrics_rules'", "'X-Deck-Action': DECK_ACTION_TOKEN", "'Content-Type': 'application/json'",
