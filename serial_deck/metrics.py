@@ -179,4 +179,4 @@ def save_user_rules(rules: list[dict[str, Any]], base_rev: str, path: Path | Non
         if problem:
             raise MetricsError(f"{problem}; fix or delete the file first")
     write_private(path, text)
-    return _rev(text.encode("utf-8"))
+    return _rev(path.read_bytes())  # the stored bytes: Windows rewrites "\n" as "\r\n"

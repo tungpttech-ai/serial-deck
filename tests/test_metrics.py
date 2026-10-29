@@ -163,6 +163,19 @@ class FileLayerTest(unittest.TestCase):
         self.assertEqual(metrics.load_user_rules(self.path), (saved, "", rev))
         self.assertEqual([p.name for p in self.path.parent.iterdir()], ["metrics.json"])
 
+    def test_the_rev_a_save_returns_is_the_rev_of_the_bytes_on_disk(self):
+        # Windows turns "\n" into "\r\n" on write: the rev must come from what was stored.
+        real = metrics.write_private
+
+        def crlf(path, text):
+            real(path, text)
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+
+        with patch.object(metrics, "write_private", crlf):
+            rev = metrics.save_user_rules([rule()], "", self.path)
+        self.assertEqual(rev, metrics.load_user_rules(self.path)[2])
+        metrics.save_user_rules([rule(id="other")], rev, self.path)  # and it works as the next base_rev
+
     def test_save_stale_rev_refused_file_unchanged(self):
         rev = metrics.save_user_rules([rule()], "", self.path)
         before = self.path.read_bytes()
