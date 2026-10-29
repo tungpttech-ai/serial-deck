@@ -269,8 +269,8 @@ A **device profile** can ship rules too: add a `metrics` list (same fields) to t
 profile JSON. Profile rules are read-only in the dashboard (use *Copy to mine* to
 change one); a rule of yours with the same `id` replaces it. Limits: 32 rules after
 merging, `before` up to 64 characters, `label` 40, `unit` 8, `metrics.json` 16 KiB.
-`serial-deck-web --profile NAME` selects the profile; the desktop app and other
-entry points read only `metrics.json`.
+`serial-deck-web --profile NAME` and `serial-deck-app --profile NAME` select the
+profile; the Tk `serial-deck-desktop` has no metrics and reads neither file.
 
 Trends are kept per connection in the open window (600 samples per rule), are not
 saved, and are not visible to MCP or exports. Saving checks that the file did not
