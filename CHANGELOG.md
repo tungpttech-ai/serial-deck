@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 (2026-10-29)
+
+- `serial-deck-app` accepts `--profile <name>`, like `serial-deck-web`: the profile's
+  `default_baud` and `default_mode` apply (an explicit `--baud` / `--mode` still wins)
+  and its `metrics` rules show on the Telemetry tab. Without it the window shows only
+  your own rules, as before. An unknown profile name is refused at start.
+
 ## 0.4.0 (2026-10-29)
 
 - Fixed: a dashboard connecting before an autorun script's runner had attached was

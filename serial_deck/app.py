@@ -24,10 +24,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from . import runtime
+    from . import profiles, runtime
     from .hub_client import DEFAULT_SOCKET
     from .web import BrowserLifecycle, HubStartupError, WebBackend
 except ImportError:
+    import profiles
     import runtime
     from hub_client import DEFAULT_SOCKET
     from web import BrowserLifecycle, HubStartupError, WebBackend
@@ -353,8 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serial Deck in a native pywebview window")
     parser.add_argument("--port", default="", help="initial physical UART selection for the hub")
     parser.add_argument("--baud", type=int, default=2000000, help="initial UART baudrate")
-    parser.add_argument("--mode", choices=("control", "linux"), default="linux",
-                        help="initial console mode (control: firmware with the control protocol)")
+    parser.add_argument("--mode", choices=("control", "linux"), default=None,
+                        help="initial console mode (control: firmware with the control protocol); "
+                             "default linux, or the profile's default_mode")
+    parser.add_argument("--profile", default="",
+                        help="device profile name: supplies the default baud and mode and its metric rules")
     parser.add_argument("--socket", default=DEFAULT_SOCKET, help="hub endpoint path")
     parser.add_argument("--attach-only", action="store_true", help="require an existing hub")
     parser.add_argument("--elf", default="", help="application ELF file for address symbolization")
@@ -426,6 +430,11 @@ def run_browser(args: argparse.Namespace, backend: Any,
     return 0
 
 
+def profile_kwargs(args: argparse.Namespace) -> dict[str, str]:
+    """Only a launch that named a profile passes one: the page then knows profiles are supported."""
+    name = getattr(args, "profile", "")
+    return {"profile_name": name} if name else {}
+
 def run_app(args: argparse.Namespace,
             backend_factory: Callable[..., Any] = WebBackend,
             webview_module: Any = None,
@@ -442,7 +451,8 @@ def run_app(args: argparse.Namespace,
               file=sys.stderr, flush=True)
         try:
             backend = backend_factory(APP_HOST, 0, args.port, args.baud, args.socket,
-                                      args.attach_only, args.elf, getattr(args, "mode", "linux"))
+                                      args.attach_only, args.elf, getattr(args, "mode", None) or "linux",
+                                      **profile_kwargs(args))
         except HubStartupError as exc:
             print(f"Hub startup failed: {exc}", file=sys.stderr)
             return 2
@@ -454,7 +464,8 @@ def run_app(args: argparse.Namespace,
     # Always a fresh ephemeral loopback port: never another app's server.
     try:
         backend = backend_factory(APP_HOST, 0, args.port, args.baud, args.socket,
-                                  args.attach_only, args.elf, getattr(args, "mode", "linux"))
+                                  args.attach_only, args.elf, getattr(args, "mode", None) or "linux",
+                                  **profile_kwargs(args))
     except HubStartupError as exc:
         print(f"Hub startup failed: {exc}", file=sys.stderr)
         return 2
@@ -521,7 +532,17 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         from ipc import configure_console_streams
     configure_console_streams()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.profile:
+        try:
+            profile = profiles.load_all()[0][args.profile]
+        except KeyError:
+            parser.error(f"unknown profile {args.profile!r} (looked in {profiles.profile_dir()})")
+        if args.mode is None:
+            args.mode = profile.get("default_mode")
+        if profile.get("default_baud") and "--baud" not in (argv if argv is not None else sys.argv):
+            args.baud = profile["default_baud"]
     if args.install_desktop_entry:
         print(f"Installed {install_desktop_entry()}")
         return 0

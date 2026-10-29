@@ -872,6 +872,46 @@ class RunAppTest(unittest.TestCase):
         webview.create_window.return_value = FakeWindow()
         return webview
 
+    def run_main(self, argv, profile):
+        """app.main with a throwaway profile dir; returns what the backend factory was called with."""
+        import tempfile
+        created = []
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "board.json").write_text(json.dumps(profile), encoding="utf-8")
+            real = app.run_app
+
+            def run(args, *rest, **kw):
+                return real(args, lambda *a, **k: created.append((a, k)) or FakeBackend(*a),
+                            self.fake_webview(), **kw)
+
+            with patch.dict(os.environ, {"SERIAL_DECK_PROFILE_DIR": directory}), \
+                    patch.object(app, "run_app", run), patch.object(app, "wait_for_backend"), \
+                    patch("builtins.print"):
+                app.main(argv)
+        return created[0]
+
+    def test_profile_flag_supplies_mode_baud_and_the_profile_name(self):
+        positional, keywords = self.run_main(
+            ["--profile", "board"], {"default_baud": 921600, "default_mode": "control",
+                                      "metrics": [{"id": "a", "label": "A", "before": "a="}]})
+        self.assertEqual((positional[3], positional[7]), (921600, "control"))
+        self.assertEqual(keywords, {"profile_name": "board"})
+
+    def test_an_explicit_baud_or_mode_beats_the_profile(self):
+        positional, _ = self.run_main(["--profile", "board", "--baud", "115200", "--mode", "linux"],
+                                      {"default_baud": 921600, "default_mode": "control"})
+        self.assertEqual((positional[3], positional[7]), (115200, "linux"))
+
+    def test_an_unknown_profile_is_refused_before_anything_starts(self):
+        with self.assertRaises(SystemExit):
+            app.main(["--profile", "no-such-profile-xyz"])
+
+    def test_no_profile_flag_keeps_the_old_call_shape(self):
+        created = []
+        with patch.object(app, "wait_for_backend"), patch("builtins.print"):
+            app.run_app(self.args(), lambda *a, **kw: created.append((a, kw)) or FakeBackend(*a), self.fake_webview())
+        self.assertEqual(created[0][1], {})
+
     def test_runs_window_against_own_ephemeral_backend_and_closes(self):
         created = []
 
