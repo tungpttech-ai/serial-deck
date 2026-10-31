@@ -47,7 +47,8 @@ POLICIES = ("observe", "interact", "hardware")
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "expired", "rejected"}
 LIFECYCLE_RANK = {"accepted": 0, "running": 1, **{status: 2 for status in TERMINAL_STATUSES}}
 BUTTONS = ("HOME", "LEFT", "RIGHT", "ENTER", "ONOFF")
-BUTTON_ACTIONS = ("press", "release", "long_press")
+BUTTON_ACTIONS = ("click", "press", "release", "long_press")
+WIRE_BUTTON_ACTIONS = ("press", "release", "long_press")
 QUERY_KINDS = ("capabilities", "identity", "fsm", "snapshot")
 RING_RECORDS = 5000
 LINE_CHARS = 2000
@@ -852,7 +853,13 @@ class DeckAgent:
             raise AgentError("invalid_argument", f"button in {BUTTONS}, action in {BUTTON_ACTIONS}")
         session = self.session(port)
         session.note(f"button {button} {action}")
-        return session.request("input.button", {"button": button, "action": action}, timeout)
+        if action != "click":
+            return session.request("input.button", {"button": button, "action": action}, timeout)
+        # A click is press then release: the robot acts on the release (v1 SINGLE_CLICK), so a lone press does nothing.
+        pressed = session.request("input.button", {"button": button, "action": "press"}, timeout)
+        if pressed.get("status") != "succeeded":
+            return pressed
+        return session.request("input.button", {"button": button, "action": "release"}, timeout)
 
     # User scripts -----------------------------------------------------------
     # Scripts are Python files the user put in the scripts folder; the hub runs

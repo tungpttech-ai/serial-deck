@@ -211,7 +211,7 @@ class ControlDeck:
         self.port_var = tk.StringVar(value=port)
         self.baud_var = tk.StringVar(value=str(baud))
         self.flash_baud_var = tk.StringVar(value="3000000")
-        self.action_var = tk.StringVar(value="press")
+        self.action_var = tk.StringVar(value="click")
         # Off by default: a raw console must not receive control frames.
         self.control_var = tk.BooleanVar(value=False)
         self.connection_var = tk.StringVar(value="Disconnected")
@@ -475,7 +475,7 @@ class ControlDeck:
         action_row.pack(fill="x", pady=(0, SPACE_SM))
         ttk.Label(action_row, text="Action Mode", style="Muted.Panel.TLabel").pack(side="left")
         ttk.Combobox(action_row, textvariable=self.action_var, state="readonly",
-                     values=("press", "release", "long_press"), width=12).pack(side="right")
+                     values=("click", "press", "release", "long_press"), width=12).pack(side="right")
 
         dpad = ttk.Frame(controls, style="Panel.TFrame")
         dpad.pack(fill="x", pady=(0, SPACE_MD))
@@ -1078,7 +1078,9 @@ class ControlDeck:
             self.disconnect()
 
     def send_button(self, button: str) -> None:
-        self._send(make_request("input.button", {"button": button, "action": self.action_var.get()}))
+        action = self.action_var.get()
+        for edge in (("press", "release") if action == "click" else (action,)):
+            self._send(make_request("input.button", {"button": button, "action": edge}))
 
     def send_query(self, kind: str) -> None:
         self._send(make_request("query", {"kind": kind}, deadline_ms=1000))

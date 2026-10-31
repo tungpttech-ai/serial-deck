@@ -251,6 +251,10 @@ class McpEndToEndTest(unittest.TestCase):
             pressed = (await tool("serial_button", {"button": "ENTER", "action": "long_press"})).structured_content
             self.assertEqual(pressed["status"], "succeeded")
             self.assertEqual(self.firmware.commands[-1]["args"], {"button": "ENTER", "action": "long_press"})
+            clicked = (await tool("serial_button", {"button": "ENTER"})).structured_content
+            self.assertEqual(clicked["status"], "succeeded")
+            self.assertEqual([c["args"] for c in self.firmware.commands[-2:]],
+                             [{"button": "ENTER", "action": "press"}, {"button": "ENTER", "action": "release"}])
             self.firmware.mode = "silent"
             unknown = (await tool("serial_button", {"button": "HOME", "timeout_s": 0.3})).structured_content
             self.assertEqual(unknown["outcome"], "unknown")

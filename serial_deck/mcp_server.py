@@ -300,7 +300,7 @@ def build_server(agent: DeckAgent, tool_prefix: str = "serial") -> MCPServer:
     @tool("interact", title="Press a button", read_only=False)
     async def serial_button(
         button: Annotated[Literal[BUTTONS], Field(description="Logical button")],
-        action: Annotated[Literal[BUTTON_ACTIONS], Field()] = "press",
+        action: Annotated[Literal[BUTTON_ACTIONS], Field(description="click = press then release (what a finger does); press/release/long_press are single edges")] = "click",
         port: Port = None,
         timeout_s: Annotated[float, Field(gt=0, le=30)] = 5.0,
     ) -> dict[str, Any]:
