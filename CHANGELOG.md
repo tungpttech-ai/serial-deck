@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Buttons: new `click` action = `press` then `release`, now the default for the MCP `serial_button` tool, the CLI (`serial-deck button ENTER`), the web Device Control and the desktop app. Pika firmware acts on the release (v1 single click: a game launches on ENTER release), so a lone `press` no longer opens a game. `press`, `release` and `long_press` are unchanged single edges; the wire protocol is unchanged.
+
 ## 0.5.0 (2026-10-29)
 
 - Telemetry tab: an **Edit** button opens the metric list for managing it in place.

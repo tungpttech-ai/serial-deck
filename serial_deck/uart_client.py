@@ -1034,7 +1034,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     button = subparsers.add_parser("button", help="send a logical button action")
     button.add_argument("button", choices=("HOME", "LEFT", "RIGHT", "ENTER", "ONOFF"))
-    button.add_argument("action", choices=("press", "release", "long_press"))
+    button.add_argument("action", nargs="?", default="click", choices=("click", "press", "release", "long_press"),
+                        help="click (default) = press then release")
     subparsers.add_parser("show-info", help="show the info screen")
     return parser
 
@@ -1078,6 +1079,14 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.subcommand == "query":
             request = make_request("query", {"kind": args.kind})
+        elif args.subcommand == "button" and args.action == "click":
+            for edge in ("press", "release"):
+                request = make_request("input.button", {"button": args.button, "action": edge})
+                send_frame(transport, encode_json_frame(FRAME_COMMAND, sequence, request))
+                result = wait_for_response(reader, sequence, args.response_timeout)
+                if result != 0 or edge == "release":
+                    return result
+                sequence += 1
         elif args.subcommand == "button":
             request = make_request("input.button", {"button": args.button, "action": args.action})
         else:

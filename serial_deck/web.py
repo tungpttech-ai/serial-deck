@@ -780,8 +780,9 @@ class DeckWebBridge:
         self.hub_manager.request_control("break")
         self.broadcast({"type": "log", "level": "tx", "text": f"TX> <BREAK> on {self.port}"})
 
-    def send_button(self, button: str, action: str = "press") -> None:
-        self.send_command(make_request("input.button", {"button": button, "action": action}))
+    def send_button(self, button: str, action: str = "click") -> None:
+        for edge in (("press", "release") if action == "click" else (action,)):
+            self.send_command(make_request("input.button", {"button": button, "action": edge}))
 
     def send_query(self, kind: str) -> None:
         self.send_command(make_request("query", {"kind": kind}, deadline_ms=1000))
@@ -1597,7 +1598,7 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
 
             if path == "/api/button":
                 btn = body.get("button", "ENTER")
-                action = body.get("action", "press")
+                action = body.get("action", "click")
                 bridge.send_button(btn, action)
                 self._send_json({"ok": True})
                 return
@@ -2315,6 +2316,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
           <!-- Action Mode -->
           <select id="actionMode" class="bg-brand-surfaceAlt text-xs text-brand-text border border-brand-border rounded px-2 py-0.5 focus:outline-none">
+            <option value="click">Action: Click</option>
             <option value="press">Action: Press</option>
             <option value="long_press">Action: Long Press</option>
             <option value="release">Action: Release</option>
