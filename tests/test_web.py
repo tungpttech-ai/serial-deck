@@ -17,6 +17,24 @@ from serial_deck.web import (
 
 
 class DeckWebTest(unittest.TestCase):
+    def test_hello_failure_logs_without_holding_bridge_lock(self):
+        bridge = DeckWebBridge(default_mode="control")
+        bridge.connected = True
+        bridge.transport = MagicMock()
+        broadcast = bridge.broadcast
+
+        def log(event):
+            acquired = bridge.lock.acquire(blocking=False)
+            self.assertTrue(acquired, "HELLO failure must release lock before logging")
+            bridge.lock.release()
+            broadcast(event)
+
+        with patch("serial_deck.web.send_hello", side_effect=OSError("write failed")), \
+                patch.object(bridge, "broadcast", side_effect=log):
+            bridge._send_hello()
+        self.assertIn("write failed", bridge.history_logs[-1]["text"])
+        self.assertTrue(bridge.get_status()["connected"])
+
     def test_log_level_parsing(self):
         self.assertEqual(parse_log_level("E (123) panic: failed"), "error")
         self.assertEqual(parse_log_level("W (123) wifi: retry"), "warning")

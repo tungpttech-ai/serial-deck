@@ -748,7 +748,10 @@ class DeckWebBridge:
                 send_hello(self.transport, self.sequence, "serial-deck-web")
                 self.sequence += 1
             except Exception as exc:
-                self.broadcast({"type": "log", "level": "error", "text": f"[send_hello error] {exc}"})
+                error = str(exc)
+            else:
+                return
+        self.broadcast({"type": "log", "level": "error", "text": f"[send_hello error] {error}"})
 
     def send_command(self, payload: dict[str, Any]) -> None:
         with self.lock:
