@@ -142,6 +142,14 @@ class AssetTest(unittest.TestCase):
                     self.assertFalse(url.startswith(("http:", "https:", "//")), url)
                     self.assertTrue((asset.parent / url).resolve().is_file(), f"{ref}: {url}")
 
+    def test_dashboard_uses_prebuilt_tailwind(self):
+        # The Play CDN recompiled CSS on every DOM mutation (each log line).
+        self.assertNotIn("tailwindcss-3.4.17.js", HTML_PAGE)
+        self.assertIn('href="/assets/tailwind.css"', HTML_PAGE)
+        css = (ASSET_ROOT / "tailwind.css").read_text(encoding="utf-8")
+        for cls in ("bg-brand-surface", "text-brand-muted", "border-brand-border", "hidden"):
+            self.assertIn("." + cls, css)
+
     def test_vendor_files_have_licenses_and_checksums(self):
         vendor = ASSET_ROOT / "vendor"
         listed = {line.split(None, 1)[1].strip()

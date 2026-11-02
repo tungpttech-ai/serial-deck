@@ -1837,37 +1837,6 @@ HTML_PAGE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Serial Deck</title>
-  <script src="/assets/vendor/tailwindcss/tailwindcss-3.4.17.js"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              bg: '#111318',
-              surface: '#1e2024',
-              surfaceAlt: '#1a1c20',
-              border: '#3b494c',
-              accent: '#00e5ff',
-              accentHover: '#00daf3',
-              flash: '#fd9000',
-              flashHover: '#ffb778',
-              danger: '#ff6b61',
-              success: '#22ef7e',
-              warning: '#ffb778',
-              cyan: '#00daf3',
-              blue: '#8fd8ff',
-              purple: '#b1ffbf',
-              tx: '#ff8fd8',
-              muted: '#bac9cc',
-              text: '#e2e2e8'
-            }
-          }
-        }
-      }
-    }
-  </script>
   <!-- Vendored locally (web_assets/vendor/README.md) so the UI works offline. -->
   <link rel="stylesheet" href="/assets/vendor/fontawesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="/assets/vendor/xterm/5.5.0/xterm.min.css">
@@ -2188,6 +2157,9 @@ HTML_PAGE = """<!DOCTYPE html>
     .tl-src { margin-left: auto; font-size: 10px; color: #849396; }
     #deviceActions > summary:focus-visible { outline: 2px solid #00e5ff; outline-offset: 2px; }
   </style>
+  <!-- Prebuilt by tools/build_css.sh; rerun it after changing Tailwind classes.
+       Last in <head> so it wins over the inline styles, as the old Play CDN did. -->
+  <link rel="stylesheet" href="/assets/tailwind.css">
 </head>
 <body class="h-screen flex flex-col overflow-hidden select-none">
 
