@@ -7,7 +7,7 @@ modified except the added `fonts/fonts.css`. `SHA256SUMS` lists every file.
 
 | Directory | Package | Version | License | Source |
 |-----------|---------|---------|---------|--------|
-| `tailwindcss/` | Tailwind CSS Play CDN build | 3.4.17 | MIT (`tailwindcss/LICENSE.txt`) | `https://cdn.tailwindcss.com/3.4.17` (what `https://cdn.tailwindcss.com` redirected to on 2026-09-30) |
+| `tailwindcss/` | Tailwind CSS license for the prebuilt `web_assets/tailwind.css` (built by `tools/build_css.sh`; the in-browser Play CDN was dropped because it re-scanned the DOM on every log line) | 3.4.17 | MIT (`tailwindcss/LICENSE.txt`) | `npx tailwindcss@3.4.17` |
 | `fontawesome/6.4.0/` | Font Awesome Free (CSS + webfonts) | 6.4.0 | Icons CC BY 4.0, fonts SIL OFL 1.1, code MIT (`LICENSE.txt`) | `https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/` |
 | `xterm/5.5.0/` | `@xterm/xterm` | 5.5.0 | MIT (`LICENSE.txt`) | `https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/` |
 | `xterm-addon-fit/0.10.0/` | `@xterm/addon-fit` | 0.10.0 | MIT (`LICENSE.txt`) | `https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/` |
