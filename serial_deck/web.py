@@ -1858,7 +1858,8 @@ HTML_PAGE = """<!DOCTYPE html>
       const cf = Number(a.consoleSize);
       if (cf >= 8 && cf <= 32) root.style.setProperty('--console-font', cf + 'px'); else root.style.removeProperty('--console-font');
     }
-    applyAppearance(loadAppearance());
+    let appearanceState = loadAppearance();  // source of truth; storage is best-effort
+    applyAppearance(appearanceState);
   </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1877,19 +1878,19 @@ HTML_PAGE = """<!DOCTYPE html>
       --c-text: 226 226 232; --c-muted: 186 201 204; --c-dim: 132 147 150; --c-accent: 0 229 255; --c-cyan: 0 218 243;
       --c-flash: 253 144 0; --c-warning: 255 183 120; --c-danger: 255 107 97; --c-success: 34 239 126; --c-blue: 143 216 255;
       --c-purple: 177 255 191; --c-tx: 255 143 216; --c-tag: 127 198 209; --c-mdebug: 169 195 207;
-      --c-onAccent: 0 54 61; --c-onSuccess: 0 33 13; --c-onFlash: 48 24 0; --console-font: 12px; }
+      --c-onAccent: 0 54 61; --c-onSuccess: 0 33 13; --c-onFlash: 48 24 0; --console-font: 12px; --tag-l: 68%; }
     [data-theme="light"] { --scheme: light;
       --c-bg: 243 244 246; --c-surface: 255 255 255; --c-surfaceAlt: 236 238 241; --c-console: 250 250 251; --c-border: 203 210 214;
       --c-text: 28 32 38; --c-muted: 74 85 92; --c-dim: 110 120 126; --c-accent: 0 122 153; --c-cyan: 0 110 140;
       --c-flash: 214 110 0; --c-warning: 176 96 0; --c-danger: 200 40 30; --c-success: 16 128 60; --c-blue: 30 100 190;
       --c-purple: 110 60 170; --c-tx: 180 40 130; --c-tag: 20 110 125; --c-mdebug: 70 100 120;
-      --c-onAccent: 255 255 255; --c-onSuccess: 255 255 255; --c-onFlash: 255 255 255; }
+      --c-onAccent: 255 255 255; --c-onSuccess: 255 255 255; --c-onFlash: 255 255 255; --tag-l: 30%; }
     [data-theme="contrast"] { --scheme: dark;
       --c-bg: 0 0 0; --c-surface: 10 10 10; --c-surfaceAlt: 18 18 18; --c-console: 0 0 0; --c-border: 140 140 140;
       --c-text: 255 255 255; --c-muted: 225 225 225; --c-dim: 190 190 190; --c-accent: 255 230 0; --c-cyan: 0 255 255;
       --c-flash: 255 150 0; --c-warning: 255 200 0; --c-danger: 255 90 90; --c-success: 0 255 120; --c-blue: 120 200 255;
       --c-purple: 200 160 255; --c-tx: 255 120 220; --c-tag: 120 230 240; --c-mdebug: 200 220 230;
-      --c-onAccent: 0 0 0; --c-onSuccess: 0 0 0; --c-onFlash: 0 0 0; }
+      --c-onAccent: 0 0 0; --c-onSuccess: 0 0 0; --c-onFlash: 0 0 0; --tag-l: 75%; }
     #logsPanePrimary, #logsPaneSplitContent, #viewEvents { font-size: var(--console-font); }
     #appearancePanel { position: fixed; left: 64px; bottom: 12px; z-index: 60; width: 17rem; }
     #appearancePanel input[type=color] { width: 2rem; height: 1.4rem; padding: 0; border: 1px solid rgb(var(--c-border)); background: none; }
@@ -3066,7 +3067,7 @@ HTML_PAGE = """<!DOCTYPE html>
     // Hotkey listener
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY'].includes(document.activeElement.tagName)) return;
-      if (document.activeElement.closest('.log-pane, #deviceActions')) return;
+      if (document.activeElement.closest('.log-pane, #deviceActions, #appearancePanel')) return;
       if (['pairModal', 'hostKeyModal', 'passphraseModal'].some(id => !document.getElementById(id).classList.contains('hidden'))) {
         if (e.key === 'Escape') { pairClose(); passphraseClose(); document.getElementById('hostKeyModal').classList.add('hidden'); }
         return;
@@ -4424,7 +4425,7 @@ HTML_PAGE = """<!DOCTYPE html>
         // FNV-1a, then a golden-angle step: similar names (wifi / spi) still land far apart on the hue wheel.
         let h = 2166136261;
         for (let i = 0; i < tag.length; i++) h = Math.imul(h ^ tag.charCodeAt(i), 16777619) >>> 0;
-        c = 'hsl(' + Math.round((h % 1000) * 137.508 % 360) + ',55%,68%)';
+        c = 'hsl(' + Math.round((h % 1000) * 137.508 % 360) + ',55%,var(--tag-l))';
         tagHues.set(tag, c);
       }
       return c;
@@ -6450,7 +6451,7 @@ HTML_PAGE = """<!DOCTYPE html>
       return '#' + v.map(n => (n | 0).toString(16).padStart(2, '0')).join('');
     }
     function syncAppearanceUi() {
-      const a = loadAppearance(), root = document.documentElement;
+      const root = document.documentElement;
       document.getElementById('apTheme').value = root.dataset.theme;
       const ui = parseInt(root.style.fontSize, 10) || 16;
       const con = parseInt(getComputedStyle(root).getPropertyValue('--console-font'), 10) || 12;
@@ -6463,28 +6464,31 @@ HTML_PAGE = """<!DOCTYPE html>
         label.textContent = t;
         const input = document.createElement('input');
         input.type = 'color'; input.value = tokenHex(t); input.setAttribute('aria-label', t + ' color');
-        input.oninput = () => setAppearance({colors: Object.assign({}, loadAppearance().colors, {[t]: input.value})}, false);
+        input.oninput = () => setAppearance({colors: Object.assign({}, appearanceState.colors, {[t]: input.value})}, false);
         label.appendChild(input);
         return label;
       }));
     }
     function setAppearance(patch, rebuild = true) {
-      const a = Object.assign(loadAppearance(), patch);
+      const a = Object.assign({}, appearanceState, patch);
       // Switching preset drops custom colors so the new preset shows as designed.
       if (patch.theme) delete a.colors;
+      appearanceState = a;
       try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(a)); } catch (err) {}
       applyAppearance(a);
       applyTerminalAppearance();
       if (rebuild) syncAppearanceUi();
     }
     function resetAppearance() {
+      appearanceState = {};
       try { localStorage.removeItem(APPEARANCE_KEY); } catch (err) {}
       applyAppearance({}); applyTerminalAppearance(); syncAppearanceUi();
     }
     function applyTerminalAppearance() {
       if (!term) return;
       term.options.theme = { background: tokenHex('console'), foreground: tokenHex('text'), cursor: tokenHex('accent'), selectionBackground: tokenHex('border') };
-      term.options.fontSize = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--console-font'), 10) + 1 || 13;
+      const cf = Number(appearanceState.consoleSize);
+      term.options.fontSize = cf >= 8 && cf <= 32 ? cf : 13;
       try { termFitAddon && termFitAddon.fit(); } catch (err) {}
     }
     function toggleAppearance(open) {
@@ -6495,7 +6499,12 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('appearanceBtn').classList.toggle('active', show);
       if (show) syncAppearanceUi();
     }
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAppearance(false); });
+    window.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || document.getElementById('appearancePanel').classList.contains('hidden')) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      toggleAppearance(false);
+      document.getElementById('appearanceBtn').focus();
+    }, true);
   </script>
 </body>
 </html>
