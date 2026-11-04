@@ -35,6 +35,20 @@ class DeckWebTest(unittest.TestCase):
         self.assertIn("write failed", bridge.history_logs[-1]["text"])
         self.assertTrue(bridge.get_status()["connected"])
 
+    def test_registry_connect_to_new_port_starts_new_archives(self):
+        bridge = DeckWebBridge(default_port="/dev/old", default_mode="control")
+        old_logs, old_raw = bridge.history_logs, bridge.raw_records
+        bridge.hub_registry = MagicMock()
+        bridge.hub_registry.acquire.return_value = MagicMock(baud=115200)
+        with patch("serial_deck.web.open_uart_transport", return_value=MagicMock()), \
+                patch("serial_deck.web.UartReader"), patch("threading.Thread"), \
+                patch.object(bridge, "_remember_device"), patch.object(bridge, "_session_changed"), \
+                patch.object(bridge, "_send_hello"):
+            bridge._connect("/dev/new", 115200)
+        self.assertIsNot(bridge.history_logs, old_logs)
+        self.assertIsNot(bridge.raw_records, old_raw)
+        self.assertEqual(bridge.history_logs.label, "Web /dev/new")
+
     def test_log_level_parsing(self):
         self.assertEqual(parse_log_level("E (123) panic: failed"), "error")
         self.assertEqual(parse_log_level("W (123) wifi: retry"), "warning")

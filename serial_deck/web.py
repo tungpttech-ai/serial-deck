@@ -430,6 +430,7 @@ class DeckWebBridge:
             raise ValueError("Select a serial port, an SSH device or a tcp:// / udp:// / unix:// endpoint")
         if mode is not None and mode not in CONSOLE_MODES:
             raise ValueError(f"unknown console mode: {mode}")
+        previous_port = self.port  # the registry branch below already moves self.port
         if self.hub_registry is not None:
             if self.connected or self._owns_manager:
                 self._drop_connection()  # connect_lock is already held by the caller
@@ -466,7 +467,7 @@ class DeckWebBridge:
                 self._release_owned_manager()
             raise RuntimeError(f"Connection failed: {exc}") from exc
         with self.lock:
-            if port != self.port:
+            if port != previous_port:
                 self.history_logs = CachedRecords(f"Web {port}")
                 self.raw_records = CachedRecords(f"Raw {port}")
             self.port = port
@@ -6811,7 +6812,7 @@ class WebBackend:
         self.connections.lifecycle_hubs.append(self.hub_manager)
         self.handler.connections = self.connections
         self.updater = Updater(self.connections.settings, self.update_blocker, self.prepare_update,
-                               lambda: self.server.shutdown())
+                               lambda: self.server.shutdown(), self.abort_update)
         self.handler.updater = self.updater
 
     def update_blocker(self):
@@ -6830,7 +6831,20 @@ class WebBackend:
     def prepare_update(self):
         if self.connections.watcher is not None:
             self.connections.watcher.close()
-        self.hub_manager.shutdown()
+            self.connections.watcher = None
+        try:
+            self.hub_manager.shutdown()
+        except Exception:
+            self.abort_update()
+            raise
+
+    def abort_update(self):
+        """Installer handoff failed: the app keeps running, so auto-connect must too."""
+        try:
+            if self.connections.settings.get()["rules"]:
+                self.connections.start_rules()
+        except Exception:
+            pass  # settings trouble must not hide the update error
 
     @property
     def port(self) -> int:

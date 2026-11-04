@@ -491,6 +491,9 @@ class Session:
         while True:
             end = self.cursor
             for record in record_rows(self.records, cursor=cursor, before=end):
+                if (cancelled is not None and cancelled()) or time.monotonic() >= deadline:
+                    end = record["seq"]  # resume here; the checks below return cancelled/timeout
+                    break
                 if record["kind"] == "frame":
                     continue
                 text = record.get("text", "")

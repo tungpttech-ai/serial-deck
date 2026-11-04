@@ -298,8 +298,9 @@ def launch_installer(kind, artifact, root, version, expected_digest=None):
 
 
 class Updater:
-    def __init__(self, settings, blocker, prepare, restart):
+    def __init__(self, settings, blocker, prepare, restart, abort=None):
         self.settings, self.blocker, self.prepare, self.restart = settings, blocker, prepare, restart
+        self.abort = abort
         self.store = JsonFile("update-state.json", {})
         cache_root = os.environ.get("XDG_CACHE_HOME")
         if not cache_root:
@@ -383,7 +384,12 @@ class Updater:
             if sha256(artifact) != asset["sha256"]:
                 raise ValueError("staged update checksum changed; installation refused")
             self.prepare()  # atomically stop only an idle hub; refusal aborts installation
-            pid = launch_installer(kind, artifact, artifact.parent, latest, asset["sha256"])
+            try:
+                pid = launch_installer(kind, artifact, artifact.parent, latest, asset["sha256"])
+            except BaseException:
+                if self.abort is not None:
+                    self.abort()
+                raise
             self._set(state="restarting", helper_pid=pid, result=str(artifact.parent / "install-result.json"),
                       message="Verified update ready; closing app for installation")
             self.restart()

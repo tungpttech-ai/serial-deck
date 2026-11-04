@@ -521,6 +521,27 @@ class CancellationTest(unittest.TestCase):
         self.assertEqual(result["reason"], "cancelled")
         self.assertLess(time.monotonic() - start, 2)
 
+    def test_wait_over_long_history_honours_timeout(self):
+        session = agent_mod.Session.__new__(agent_mod.Session)
+        session.lock = threading.Lock()
+        session.changed = threading.Condition(session.lock)
+        session.records = agent_mod.deque({"seq": n, "kind": "log", "text": "x"} for n in range(1, 10001))
+        session.next_seq = 10001
+        session.lost = None
+        session.port = "/dev/x"
+        scanned = []
+        real = agent_mod.record_rows
+
+        def rows(*args, **kwargs):
+            for record in real(*args, **kwargs):
+                scanned.append(record["seq"])
+                yield record
+
+        with patch.object(agent_mod, "record_rows", side_effect=rows):
+            result = session.wait_for(["never"], 0, 1, False, 0, lambda: True)
+        self.assertEqual(result["reason"], "cancelled")
+        self.assertLess(len(scanned), 10)
+
     def test_unknown_dispatch_is_reported_as_unknown(self):
         from serial_deck.uart_client import FrameDispatchUnknown
 

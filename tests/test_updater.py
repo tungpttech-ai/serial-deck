@@ -163,6 +163,31 @@ class UpdaterTest(unittest.TestCase):
         launch.assert_not_called()
         self.restart.assert_not_called()
 
+    def test_failed_installer_launch_restores_app_state(self):
+        asset = self.root / "update.whl"
+        asset.write_bytes(b"verified update")
+        self.manager.abort = MagicMock()
+        with patch.object(up, "stage_download", return_value=asset), \
+                patch.object(up, "launch_installer", side_effect=OSError("no helper")):
+            self.manager.check(force=True)
+        self.assertEqual(self.manager.status()["state"], "error")
+        self.manager.abort.assert_called_once_with()
+        self.restart.assert_not_called()
+
+    def test_refused_hub_shutdown_restarts_auto_connect(self):
+        from serial_deck.web import WebBackend
+        deck = WebBackend.__new__(WebBackend)
+        deck.hub_manager = MagicMock()
+        deck.hub_manager.shutdown.side_effect = RuntimeError("hub became busy")
+        deck.connections = SimpleNamespace(watcher=MagicMock(), settings=self.settings, start_rules=MagicMock())
+        old = deck.connections.watcher
+        self.settings.update(rules=[{"usb_vid_pid": "1a86:55d2", "baud": 2000000, "mode": "control"}])
+        with self.assertRaises(RuntimeError):
+            deck.prepare_update()
+        old.close.assert_called_once_with()
+        self.assertIsNone(deck.connections.watcher)
+        deck.connections.start_rules.assert_called_once_with()
+
     def test_installer_result_is_loaded_after_restart(self):
         result = self.root / "install-result.json"
         result.write_text(json.dumps({"state": "updated", "message": "installed"}), encoding="utf-8-sig")
