@@ -717,18 +717,24 @@ class DeckWebBridge:
             if frame_type == FRAME_HELLO:
                 cmds = ", ".join(message.get("commands", []))
                 self.device_info = f"{message.get('target', 'device')} @ {message.get('baud', self.baud)} baud [{cmds}]"
-            if "status" in message:
-                self.fsm_state = str(message["status"]).upper()
-            if "result" in message:
-                res = message["result"]
-                if isinstance(res, dict):
-                    self.telemetry.update(res)
-                    if "state" in res:
-                        self.fsm_state = str(res["state"]).upper()
-                    if "fsm" in res:
-                        self.fsm_state = str(res["fsm"]).upper()
-                else:
-                    self.fsm_state = str(res)
+            # The FSM field follows only a state the device names: a "result" object (or JSON string, as the
+            # firmware sends it) with "state"/"fsm", or the legacy query text "state=NAME(id)". Command lifecycle
+            # status (accepted/succeeded) and other results (identity, capabilities) never overwrite it.
+            res = message.get("result")
+            if isinstance(res, str):
+                text = res.strip()
+                if text.startswith("{"):
+                    try:
+                        res = json.loads(text)
+                    except ValueError:
+                        pass
+                elif text.startswith("state="):
+                    res = {"state": text[len("state="):].split("(", 1)[0]}
+            if isinstance(res, dict):
+                self.telemetry.update(res)
+                state = res.get("state", res.get("fsm"))
+                if isinstance(state, str) and state:
+                    self.fsm_state = state.upper()
         self.broadcast({
             "type": "status",
             **self.get_status(),

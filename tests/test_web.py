@@ -130,6 +130,23 @@ class DeckWebTest(unittest.TestCase):
         self.assertEqual(status["fsm"], "VOICE_ACTIVE")
         self.assertEqual(status["telemetry"].get("heap_free"), 123456)
 
+    def test_bridge_fsm_follows_state_only(self):
+        bridge = DeckWebBridge(default_port="/dev/ttyMock", default_baud=115200)
+        # firmware: unsolicited fsm EVENT, result is a JSON string
+        bridge._update_telemetry(3, {"status": "succeeded", "command": "fsm",
+                                     "result": "{\"state\":\"CONVERSATION_PRELOADING\",\"from\":\"CONVERSATION_LISTENING\"}"})
+        self.assertEqual(bridge.get_status()["fsm"], "CONVERSATION_PRELOADING")
+        # command lifecycle and non-state results leave it alone
+        bridge._update_telemetry(3, {"status": "accepted", "command": "input.button"})
+        bridge._update_telemetry(3, {"status": "succeeded", "command": "query", "result": "ROBOT123"})
+        bridge._update_telemetry(3, {"status": "succeeded", "result": "{not json"})
+        self.assertEqual(bridge.get_status()["fsm"], "CONVERSATION_PRELOADING")
+        # query fsm, new JSON and legacy text
+        bridge._update_telemetry(3, {"status": "succeeded", "command": "query", "result": "{\"state\":\"MENU_MAIN\",\"id\":7}"})
+        self.assertEqual(bridge.get_status()["fsm"], "MENU_MAIN")
+        bridge._update_telemetry(3, {"status": "succeeded", "command": "query", "result": "state=CONVERSATION_LISTENING(23)"})
+        self.assertEqual(bridge.get_status()["fsm"], "CONVERSATION_LISTENING")
+
     def test_bridge_flash_is_delegated_to_hub(self):
         hub = MagicMock()
         hub.endpoint = "hub:///tmp/serial-deck-test.sock"
