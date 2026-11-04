@@ -41,6 +41,14 @@ def clean_settings(raw):
     return {key: data[key] for key in DEFAULTS}
 
 
+SQLITE_FULL = 13  # sqlite3.SQLITE_FULL and exc.sqlite_errorcode need Python 3.11
+
+
+def is_disk_full(exc):
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code == SQLITE_FULL if code is not None else "database or disk is full" in str(exc)
+
+
 def default_directory():
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "serial-deck" / "logs"
 
@@ -158,7 +166,7 @@ class LogCache:
                         db.commit()
                     except sqlite3.OperationalError as exc:
                         db.rollback()
-                        if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_FULL:
+                        if not is_disk_full(exc):
                             raise
                         self._prune(force=True)
                         db.execute("INSERT OR IGNORE INTO logs(stream,seq,created,label,data) VALUES (?,?,?,?,?)", values)
