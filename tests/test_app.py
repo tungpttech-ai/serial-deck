@@ -123,6 +123,14 @@ def port_is_closed(port):
 
 
 class AssetTest(unittest.TestCase):
+    def test_page_colors_come_from_theme_tokens(self):
+        # Hardcoded palette hexes would ignore the Appearance theme; only the
+        # "stopped" splash (shown after the page is torn down) keeps literals.
+        page = HTML_PAGE.replace("color:#cfd8dc;background:#111318", "")
+        self.assertEqual(re.findall(r"#[0-9a-fA-F]{6}\b", page), [])
+        for theme in ("dark", "light", "contrast"):
+            self.assertIn(f'[data-theme="{theme}"]', HTML_PAGE)
+
     def test_page_has_no_remote_assets(self):
         self.assertNotRegex(HTML_PAGE, r"""(?:src|href)=["']https?://""")
         self.assertNotIn("fonts.googleapis.com", HTML_PAGE)

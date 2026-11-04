@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Web/App appearance: palette button on the left rail picks Dark / Light / High contrast, overrides 11 colors with a color picker, and sets UI text size (12-24 px) and console/terminal font size (8-32 px). Saved per browser; Reset restores defaults.
+
 - Dashboard: ship prebuilt Tailwind CSS (`serial_deck/web_assets/tailwind.css`, rebuild with `tools/build_css.sh`) instead of the in-browser Play CDN, which recompiled styles on every DOM change. At 300 log lines/s the page main thread drops from ~95% busy to ~11-24%; the look is unchanged.
 - Buttons: new `click` action = `press` then `release`, now the default for the MCP `serial_button` tool, the CLI (`serial-deck button ENTER`), the web Device Control and the desktop app. Pika firmware acts on the release (v1 single click: a game launches on ENTER release), so a lone `press` no longer opens a game. `press`, `release` and `long_press` are unchanged single edges; the wire protocol is unchanged.
 
