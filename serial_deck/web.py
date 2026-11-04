@@ -1834,6 +1834,33 @@ window.addEventListener('message', (event) => {
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
+  <script>
+    // Appearance prefs are per-viewer conveniences; a blocked localStorage just means defaults.
+    const APPEARANCE_KEY = 'serialdeck.appearance';
+    const THEME_TOKENS = ['bg', 'surface', 'surfaceAlt', 'console', 'border', 'text', 'muted', 'accent', 'danger', 'warning', 'success'];
+    function loadAppearance() {
+      try { const v = JSON.parse(localStorage.getItem(APPEARANCE_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch (err) { return {}; }
+    }
+    function hexToTriplet(hex) {
+      const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+      if (!m) return null;
+      const n = parseInt(m[1], 16);
+      return ((n >> 16) & 255) + ' ' + ((n >> 8) & 255) + ' ' + (n & 255);
+    }
+    function applyAppearance(a) {
+      const root = document.documentElement;
+      root.dataset.theme = ['light', 'contrast'].includes(a.theme) ? a.theme : 'dark';
+      root.style.fontSize = (Number(a.uiSize) >= 12 && Number(a.uiSize) <= 24 ? Number(a.uiSize) : 16) + 'px';
+      THEME_TOKENS.forEach(t => {
+        const trip = a.colors && hexToTriplet(a.colors[t]);
+        if (trip) root.style.setProperty('--c-' + t, trip); else root.style.removeProperty('--c-' + t);
+      });
+      const cf = Number(a.consoleSize);
+      if (cf >= 8 && cf <= 32) root.style.setProperty('--console-font', cf + 'px'); else root.style.removeProperty('--console-font');
+    }
+    let appearanceState = loadAppearance();  // source of truth; storage is best-effort
+    applyAppearance(appearanceState);
+  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Serial Deck</title>
@@ -1844,41 +1871,64 @@ HTML_PAGE = """<!DOCTYPE html>
   <script src="/assets/vendor/xterm-addon-fit/0.10.0/addon-fit.min.js"></script>
   <link rel="stylesheet" href="/assets/vendor/fonts/fonts.css">
   <style>
+    /* Theme tokens ("R G B" so Tailwind can add /alpha). Presets below; the
+       Appearance panel can override any token per viewer (localStorage). */
+    :root, [data-theme="dark"] { --scheme: dark;
+      --c-bg: 17 19 24; --c-surface: 30 32 36; --c-surfaceAlt: 26 28 32; --c-console: 12 14 18; --c-border: 59 73 76;
+      --c-text: 226 226 232; --c-muted: 186 201 204; --c-dim: 132 147 150; --c-accent: 0 229 255; --c-cyan: 0 218 243;
+      --c-flash: 253 144 0; --c-warning: 255 183 120; --c-danger: 255 107 97; --c-success: 34 239 126; --c-blue: 143 216 255;
+      --c-purple: 177 255 191; --c-tx: 255 143 216; --c-tag: 127 198 209; --c-mdebug: 169 195 207;
+      --c-onAccent: 0 54 61; --c-onSuccess: 0 33 13; --c-onFlash: 48 24 0; --console-font: 12px; --tag-l: 68%; }
+    [data-theme="light"] { --scheme: light;
+      --c-bg: 243 244 246; --c-surface: 255 255 255; --c-surfaceAlt: 236 238 241; --c-console: 250 250 251; --c-border: 203 210 214;
+      --c-text: 28 32 38; --c-muted: 74 85 92; --c-dim: 110 120 126; --c-accent: 0 122 153; --c-cyan: 0 110 140;
+      --c-flash: 214 110 0; --c-warning: 176 96 0; --c-danger: 200 40 30; --c-success: 16 128 60; --c-blue: 30 100 190;
+      --c-purple: 110 60 170; --c-tx: 180 40 130; --c-tag: 20 110 125; --c-mdebug: 70 100 120;
+      --c-onAccent: 255 255 255; --c-onSuccess: 255 255 255; --c-onFlash: 255 255 255; --tag-l: 30%; }
+    [data-theme="contrast"] { --scheme: dark;
+      --c-bg: 0 0 0; --c-surface: 10 10 10; --c-surfaceAlt: 18 18 18; --c-console: 0 0 0; --c-border: 140 140 140;
+      --c-text: 255 255 255; --c-muted: 225 225 225; --c-dim: 190 190 190; --c-accent: 255 230 0; --c-cyan: 0 255 255;
+      --c-flash: 255 150 0; --c-warning: 255 200 0; --c-danger: 255 90 90; --c-success: 0 255 120; --c-blue: 120 200 255;
+      --c-purple: 200 160 255; --c-tx: 255 120 220; --c-tag: 120 230 240; --c-mdebug: 200 220 230;
+      --c-onAccent: 0 0 0; --c-onSuccess: 0 0 0; --c-onFlash: 0 0 0; --tag-l: 75%; }
+    #logsPanePrimary, #logsPaneSplitContent, #viewEvents { font-size: var(--console-font); }
+    #appearancePanel { position: fixed; left: 64px; bottom: 12px; z-index: 60; width: 17rem; }
+    #appearancePanel input[type=color] { width: 2rem; height: 1.4rem; padding: 0; border: 1px solid rgb(var(--c-border)); background: none; }
     body {
       background:
-        radial-gradient(circle at 78% -20%, rgba(0,229,255,.08), transparent 33rem),
+        radial-gradient(circle at 78% -20%, rgb(var(--c-accent) / .08), transparent 33rem),
         linear-gradient(rgba(255,255,255,.015) 1px, transparent 1px),
         linear-gradient(90deg, rgba(255,255,255,.015) 1px, transparent 1px),
-        #111318;
+        rgb(var(--c-bg));
       background-size: auto, 32px 32px, 32px 32px, auto;
-      color: #e2e2e8;
+      color: rgb(var(--c-text));
       font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
     }
     .mono { font-family: 'JetBrains Mono', 'Cascadia Mono', 'Fira Code', ui-monospace, monospace; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: #111318; }
-    ::-webkit-scrollbar-thumb { background: #3b494c; border-radius: 0; }
-    ::-webkit-scrollbar-thumb:hover { background: #849396; }
-    #terminalHost .xterm-viewport { background-color: #0c0e12 !important; scrollbar-color: #3b494c transparent; }
-    .glass-card { background: #1e2024; border: 1px solid #3b494c; border-radius: 4px; box-shadow: inset 0 1px 0 rgba(255,255,255,.025); }
+    ::-webkit-scrollbar-track { background: rgb(var(--c-bg)); }
+    ::-webkit-scrollbar-thumb { background: rgb(var(--c-border)); border-radius: 0; }
+    ::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-dim)); }
+    #terminalHost .xterm-viewport { background-color: rgb(var(--c-console)) !important; scrollbar-color: rgb(var(--c-border)) transparent; }
+    .glass-card { background: rgb(var(--c-surface)); border: 1px solid rgb(var(--c-border)); border-radius: 4px; box-shadow: inset 0 1px 0 rgba(255,255,255,.025); }
     .rounded-lg, .rounded-xl { border-radius: 4px; }
     .shadow, .shadow-md, .shadow-lg, .shadow-md { box-shadow: none !important; }
     .dpad-btn {
-      background: #1a1c20;
-      border: 1px solid #3b494c;
+      background: rgb(var(--c-surfaceAlt));
+      border: 1px solid rgb(var(--c-border));
       transition: all 0.12s ease-in-out;
       user-select: none;
     }
     .dpad-btn:active, .dpad-btn.active-key {
-      background: #00e5ff;
-      color: #00363d;
+      background: rgb(var(--c-accent));
+      color: rgb(var(--c-onAccent));
       transform: scale(0.96);
-      box-shadow: 0 0 12px rgba(0, 229, 255, 0.35);
+      box-shadow: 0 0 12px rgb(var(--c-accent) / 0.35);
     }
     .power-btn:active, .power-btn.active-key {
-      background: #ff6b61 !important;
+      background: rgb(var(--c-danger)) !important;
       color: #fff !important;
-      box-shadow: 0 0 12px rgba(255, 107, 97, 0.4) !important;
+      box-shadow: 0 0 12px rgb(var(--c-danger) / 0.4) !important;
     }
     .control-rail {
       position: fixed;
@@ -1890,8 +1940,8 @@ HTML_PAGE = """<!DOCTYPE html>
       align-items: center;
       gap: 8px;
       padding: 12px 8px;
-      background: #0c0e12;
-      border-right: 1px solid #3b494c;
+      background: rgb(var(--c-console));
+      border-right: 1px solid rgb(var(--c-border));
     }
     .rail-mark {
       display: grid;
@@ -1899,8 +1949,8 @@ HTML_PAGE = """<!DOCTYPE html>
       width: 32px;
       height: 32px;
       margin-bottom: 12px;
-      color: #00e5ff;
-      font-size: 17px;
+      color: rgb(var(--c-accent));
+      font-size: 1.0625rem;
     }
     .rail-btn {
       width: 36px;
@@ -1908,20 +1958,20 @@ HTML_PAGE = """<!DOCTYPE html>
       border: 1px solid transparent;
       border-radius: 4px;
       background: transparent;
-      color: #849396;
+      color: rgb(var(--c-dim));
       cursor: pointer;
       transition: color .15s ease, background .15s ease, border-color .15s ease;
     }
     .rail-btn:hover, .rail-btn.active {
-      color: #00363d;
-      background: #00e5ff;
-      border-color: #00e5ff;
+      color: rgb(var(--c-onAccent));
+      background: rgb(var(--c-accent));
+      border-color: rgb(var(--c-accent));
     }
     .rail-btn { position: relative; }
-    .rail-sep { width: 24px; height: 1px; background: #3b494c; margin: 4px 0; }
+    .rail-sep { width: 24px; height: 1px; background: rgb(var(--c-border)); margin: 4px 0; }
     .rail-badge {
       position: absolute; top: -4px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px;
-      border-radius: 8px; background: #22ef7e; color: #00210d; font-size: 10px; font-weight: 800;
+      border-radius: 8px; background: rgb(var(--c-success)); color: rgb(var(--c-onSuccess)); font-size: 0.625rem; font-weight: 800;
       line-height: 16px; text-align: center;
     }
     header, body > section, main { margin-left: 56px; }
@@ -1932,41 +1982,41 @@ HTML_PAGE = """<!DOCTYPE html>
     body:not([data-page="mcp"]) #mcpPage { display: none; }
     body:not([data-page="auto"]) #autoPage { display: none; }
     #mcpPage, #autoPage { min-height: 0; }
-    .mcp-card { background: #1e2024; border: 1px solid #3b494c; border-radius: 4px; }
+    .mcp-card { background: rgb(var(--c-surface)); border: 1px solid rgb(var(--c-border)); border-radius: 4px; }
     .mcp-code { position: relative; }
     .mcp-code pre {
-      margin: 0; padding: 8px 40px 8px 10px; background: #0c0e12; border: 1px solid #3b494c; border-radius: 4px;
-      white-space: pre-wrap; word-break: break-all; font-size: 11px; color: #e2e2e8; user-select: text;
+      margin: 0; padding: 8px 40px 8px 10px; background: rgb(var(--c-console)); border: 1px solid rgb(var(--c-border)); border-radius: 4px;
+      white-space: pre-wrap; word-break: break-all; font-size: 0.6875rem; color: rgb(var(--c-text)); user-select: text;
     }
     .mcp-code button {
-      position: absolute; top: 4px; right: 4px; padding: 2px 6px; font-size: 11px; border-radius: 3px;
-      background: #1a1c20; border: 1px solid #3b494c; color: #bac9cc;
+      position: absolute; top: 4px; right: 4px; padding: 2px 6px; font-size: 0.6875rem; border-radius: 3px;
+      background: rgb(var(--c-surfaceAlt)); border: 1px solid rgb(var(--c-border)); color: rgb(var(--c-muted));
     }
-    .mcp-code button:hover { color: #00e5ff; border-color: #00e5ff; }
+    .mcp-code button:hover { color: rgb(var(--c-accent)); border-color: rgb(var(--c-accent)); }
     .select-text, .select-text * { user-select: text; -webkit-user-select: text; }
     button:focus-visible, input:focus-visible, select:focus-visible {
-      outline: 2px solid #00e5ff;
+      outline: 2px solid rgb(var(--c-accent));
       outline-offset: 2px;
     }
-    :root { color-scheme: dark; }
+    :root { color-scheme: var(--scheme); }
     /* WebKitGTK (app window) draws native selects with the light GTK theme,
        ignoring the Tailwind colors. Drop the native look and draw the arrow
        ourselves; background colors still come from each select's classes. */
     select {
       -webkit-appearance: none;
       appearance: none;
-      color-scheme: dark;
-      color: #e2e2e8;
+      color-scheme: var(--scheme);
+      color: rgb(var(--c-text));
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23bac9cc' stroke-width='1.5'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right .45rem center;
       background-size: 10px 6px;
       padding-right: 1.4rem !important;
     }
-    select:disabled { color: #849396; opacity: .7; cursor: not-allowed; }
-    select option, select optgroup { background-color: #1e2024; color: #e2e2e8; }
-    select option:disabled { color: #849396; }
-    select option:checked { background-color: #3b494c; }
+    select:disabled { color: rgb(var(--c-dim)); opacity: .7; cursor: not-allowed; }
+    select option, select optgroup { background-color: rgb(var(--c-surface)); color: rgb(var(--c-text)); }
+    select option:disabled { color: rgb(var(--c-dim)); }
+    select option:checked { background-color: rgb(var(--c-border)); }
     #appHeader { gap: 12px; flex-wrap: wrap; }
     #appHeader > div:first-child { min-width: 0; }
     #appHeader h1 { overflow-wrap: anywhere; }
@@ -2021,7 +2071,7 @@ HTML_PAGE = """<!DOCTYPE html>
     @media (max-width: 900px) {
       .control-rail {
         inset: auto 0 0 0; width: auto; height: 48px; flex-direction: row; justify-content: center;
-        padding: 6px; border-right: none; border-top: 1px solid #3b494c;
+        padding: 6px; border-right: none; border-top: 1px solid rgb(var(--c-border));
       }
       .rail-mark, .rail-sep { display: none; }
       header, body > section, main, #mcpPage, #autoPage { margin-left: 0; }
@@ -2038,7 +2088,7 @@ HTML_PAGE = """<!DOCTYPE html>
       #sidebarResizeHandle { display: none; }
       #viewLogs { flex-direction: column; }
       #logsPanePrimary, #logsPaneSplit { flex: 1 1 0%; }
-      #logsPaneSplit { border-left: none; border-top: 1px solid #3b494c; }
+      #logsPaneSplit { border-left: none; border-top: 1px solid rgb(var(--c-border)); }
     }
     @media (max-width: 560px) {
       #appHeader { padding: 12px; }
@@ -2054,108 +2104,108 @@ HTML_PAGE = """<!DOCTYPE html>
     #consoleToolbar, #consoleTabs, #consoleFilters, #consoleActions { min-width: 0; }
     #txBody { flex-wrap: wrap; }
     #txInput { flex: 1 1 180px; }
-    .tab-btn { font-size: 12px; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;
-      color: #bac9cc; border: 1px solid transparent; white-space: nowrap; transition: background .12s, color .12s; }
-    .tab-btn:hover { background: #1e2024; color: #e2e2e8; }
-    .tab-btn[aria-selected="true"] { background: #1e2024; color: #e2e2e8; border-color: #3b494c; }
-    .tab-count { font-size: 10px; background: #1a1c20; padding: 0 6px; border-radius: 9px; color: #bac9cc; }
-    .tb-btn { font-size: 12px; display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: #1e2024; border: 1px solid #3b494c;
-      border-radius: 6px; color: #e2e2e8; font-weight: 600; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
-    .tb-btn:hover { background: #3b494c; }
-    .tb-danger:hover { background: rgba(255,107,97,.2); color: #ff6b61; }
-    #pauseBtn[aria-pressed="true"] { background: rgba(255,183,120,.18); border-color: rgba(255,183,120,.6); color: #ffb778; }
-    #pauseScrollBtn[aria-pressed="true"] { color: #00e5ff; border-color: rgba(0,229,255,.5); }
-    #pauseScrollBtn[aria-pressed="false"] { color: #bac9cc; }
-    .tb-group { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; background: #1e2024; border: 1px solid #3b494c; border-radius: 6px; min-width: 0; }
-    .tb-group:focus-within { border-color: #00e5ff; box-shadow: 0 0 0 1px #00e5ff; }
-    .tb-group.invalid { border-color: #ff6b61; box-shadow: 0 0 0 1px #ff6b61; }
-    .tb-input { background: transparent; padding: 3px 4px; color: #e2e2e8; min-width: 0; }
+    .tab-btn { font-size: 0.75rem; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700;
+      color: rgb(var(--c-muted)); border: 1px solid transparent; white-space: nowrap; transition: background .12s, color .12s; }
+    .tab-btn:hover { background: rgb(var(--c-surface)); color: rgb(var(--c-text)); }
+    .tab-btn[aria-selected="true"] { background: rgb(var(--c-surface)); color: rgb(var(--c-text)); border-color: rgb(var(--c-border)); }
+    .tab-count { font-size: 0.625rem; background: rgb(var(--c-surfaceAlt)); padding: 0 6px; border-radius: 9px; color: rgb(var(--c-muted)); }
+    .tb-btn { font-size: 0.75rem; display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: rgb(var(--c-surface)); border: 1px solid rgb(var(--c-border));
+      border-radius: 6px; color: rgb(var(--c-text)); font-weight: 600; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
+    .tb-btn:hover { background: rgb(var(--c-border)); }
+    .tb-danger:hover { background: rgb(var(--c-danger) / .2); color: rgb(var(--c-danger)); }
+    #pauseBtn[aria-pressed="true"] { background: rgb(var(--c-warning) / .18); border-color: rgb(var(--c-warning) / .6); color: rgb(var(--c-warning)); }
+    #pauseScrollBtn[aria-pressed="true"] { color: rgb(var(--c-accent)); border-color: rgb(var(--c-accent) / .5); }
+    #pauseScrollBtn[aria-pressed="false"] { color: rgb(var(--c-muted)); }
+    .tb-group { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; background: rgb(var(--c-surface)); border: 1px solid rgb(var(--c-border)); border-radius: 6px; min-width: 0; }
+    .tb-group:focus-within { border-color: rgb(var(--c-accent)); box-shadow: 0 0 0 1px rgb(var(--c-accent)); }
+    .tb-group.invalid { border-color: rgb(var(--c-danger)); box-shadow: 0 0 0 1px rgb(var(--c-danger)); }
+    .tb-input { background: transparent; padding: 3px 4px; color: rgb(var(--c-text)); min-width: 0; }
     .tb-input:focus-visible { outline: none; }
-    .tb-toggle { padding: 1px 6px; border-radius: 4px; color: #849396; font-size: 11px; }
-    .tb-toggle:hover { color: #e2e2e8; background: #3b494c; }
-    .tb-toggle[aria-pressed="true"] { color: #00e5ff; background: rgba(0,229,255,.16); }
-    .chip { padding: 2px 8px; border-radius: 4px; border: 1px dashed #3b494c; color: #849396; background: transparent;
-      font-weight: 700; text-decoration: line-through; text-decoration-color: rgba(132,147,150,.6); }
-    .chip:hover { color: #e2e2e8; }
+    .tb-toggle { padding: 1px 6px; border-radius: 4px; color: rgb(var(--c-dim)); font-size: 0.6875rem; }
+    .tb-toggle:hover { color: rgb(var(--c-text)); background: rgb(var(--c-border)); }
+    .tb-toggle[aria-pressed="true"] { color: rgb(var(--c-accent)); background: rgb(var(--c-accent) / .16); }
+    .chip { padding: 2px 8px; border-radius: 4px; border: 1px dashed rgb(var(--c-border)); color: rgb(var(--c-dim)); background: transparent;
+      font-weight: 700; text-decoration: line-through; text-decoration-color: rgb(var(--c-dim) / .6); }
+    .chip:hover { color: rgb(var(--c-text)); }
     .chip[aria-pressed="true"] { border-style: solid; text-decoration: none; }
     .chip[aria-pressed="true"]::before { content: "✓ "; font-weight: 400; }
-    .chip-E[aria-pressed="true"] { color: #ff6b61; background: rgba(255,107,97,.16); border-color: rgba(255,107,97,.5); }
-    .chip-W[aria-pressed="true"] { color: #ffb778; background: rgba(255,183,120,.16); border-color: rgba(255,183,120,.5); }
-    .chip-I[aria-pressed="true"] { color: #22ef7e; background: rgba(34,239,126,.12); border-color: rgba(34,239,126,.4); }
-    .chip-D[aria-pressed="true"] { color: #8fd8ff; background: rgba(143,216,255,.12); border-color: rgba(143,216,255,.4); }
-    .chip-V[aria-pressed="true"] { color: #bac9cc; background: rgba(186,201,204,.12); border-color: rgba(186,201,204,.4); }
-    .chip-elf[aria-pressed="true"] { color: #00daf3; background: rgba(0,218,243,.12); border-color: rgba(0,218,243,.4); }
-    .chip-tx[aria-pressed="true"] { color: #ff8fd8; background: rgba(255,143,216,.12); border-color: rgba(255,143,216,.4); }
-    .chip-plain[aria-pressed="true"] { color: #e2e2e8; background: rgba(226,226,232,.1); border-color: #849396; }
-    .seg { display: flex; border: 1px solid #3b494c; border-radius: 6px; overflow: hidden; }
-    .seg button { padding: 3px 10px; color: #bac9cc; background: #1e2024; font-weight: 600; }
-    .seg button + button { border-left: 1px solid #3b494c; }
-    .seg button[aria-pressed="true"] { background: #3b494c; color: #fff; }
+    .chip-E[aria-pressed="true"] { color: rgb(var(--c-danger)); background: rgb(var(--c-danger) / .16); border-color: rgb(var(--c-danger) / .5); }
+    .chip-W[aria-pressed="true"] { color: rgb(var(--c-warning)); background: rgb(var(--c-warning) / .16); border-color: rgb(var(--c-warning) / .5); }
+    .chip-I[aria-pressed="true"] { color: rgb(var(--c-success)); background: rgb(var(--c-success) / .12); border-color: rgb(var(--c-success) / .4); }
+    .chip-D[aria-pressed="true"] { color: rgb(var(--c-blue)); background: rgb(var(--c-blue) / .12); border-color: rgb(var(--c-blue) / .4); }
+    .chip-V[aria-pressed="true"] { color: rgb(var(--c-muted)); background: rgb(var(--c-muted) / .12); border-color: rgb(var(--c-muted) / .4); }
+    .chip-elf[aria-pressed="true"] { color: rgb(var(--c-cyan)); background: rgb(var(--c-cyan) / .12); border-color: rgb(var(--c-cyan) / .4); }
+    .chip-tx[aria-pressed="true"] { color: rgb(var(--c-tx)); background: rgb(var(--c-tx) / .12); border-color: rgb(var(--c-tx) / .4); }
+    .chip-plain[aria-pressed="true"] { color: rgb(var(--c-text)); background: rgb(var(--c-text) / .1); border-color: rgb(var(--c-dim)); }
+    .seg { display: flex; border: 1px solid rgb(var(--c-border)); border-radius: 6px; overflow: hidden; }
+    .seg button { padding: 3px 10px; color: rgb(var(--c-muted)); background: rgb(var(--c-surface)); font-weight: 600; }
+    .seg button + button { border-left: 1px solid rgb(var(--c-border)); }
+    .seg button[aria-pressed="true"] { background: rgb(var(--c-border)); color: rgb(var(--c-text)); }
     /* Log rows. A parsed ESP-IDF line is a grid (time | level | tag | message); everything else is one full-width row. */
     .log-pane:focus-visible { outline-offset: -2px; }
     /* Off-screen rows skip layout: the cost of a flush no longer grows with the 3000 drawn rows. */
     .log-row { content-visibility: auto; contain-intrinsic-size: auto 20px; contain: layout style; padding: 1px 4px; border-radius: 3px; border-left: 2px solid transparent; outline: none; }
     .log-row:hover { background: rgba(255,255,255,.04); }
-    .log-row.sel { background: rgba(0,229,255,.09); border-left-color: #00e5ff; }
-    .log-row.find-hit { background: rgba(255,183,120,.14); }
-    .log-row.find-cur { background: rgba(255,183,120,.34); }
+    .log-row.sel { background: rgb(var(--c-accent) / .09); border-left-color: rgb(var(--c-accent)); }
+    .log-row.find-hit { background: rgb(var(--c-warning) / .14); }
+    .log-row.find-cur { background: rgb(var(--c-warning) / .34); }
     .log-row .lr-line { display: flex; gap: .6rem; align-items: flex-start; }
     .log-row.struct .lr-line { display: grid; grid-template-columns: 5.6rem 1rem 11rem minmax(0, 1fr); column-gap: .6rem; }
-    .lr-time { color: #849396; font-size: 10px; width: 5.6rem; flex-shrink: 0; user-select: none; }
+    .lr-time { color: rgb(var(--c-dim)); font-size: 0.625rem; width: 5.6rem; flex-shrink: 0; user-select: none; }
     .lr-lvl { font-weight: 700; text-align: center; }
-    .lr-tag { color: #7fc6d1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lr-msg { color: #e2e2e8; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; flex: 1 1 0; }
-    .lv-error, .m-error { color: #ff6b61; }
-    .lv-warning, .m-warning { color: #ffb778; }
-    .lv-info { color: #22ef7e; }
-    .lv-debug { color: #8fd8ff; }
-    .m-debug { color: #a9c3cf; }
-    .lv-verbose, .m-verbose { color: #849396; }
-    .rawl .m-info { color: #22ef7e; }
-    .rawl .m-debug { color: #8fd8ff; }
-    .rawl .m-verbose { color: #bac9cc; }
-    .m-elf { color: #00daf3; }
-    .m-tx { color: #ff8fd8; }
-    .lr-detail { margin: 4px 0 4px 6.2rem; padding: 6px 8px; background: #111318; border: 1px solid #3b494c; border-radius: 4px; user-select: text; }
-    .lr-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; color: #e2e2e8; }
-    .lr-detail .lr-json { color: #00daf3; }
-    .lr-detail .lr-meta { color: #849396; margin-bottom: 4px; }
-    .lr-detail button { padding: 1px 8px; margin-right: 6px; border: 1px solid #3b494c; border-radius: 4px; color: #bac9cc; background: #1e2024; }
-    .lr-detail button:hover { color: #00e5ff; border-color: #00e5ff; }
+    .lr-tag { color: rgb(var(--c-tag)); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lr-msg { color: rgb(var(--c-text)); white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; flex: 1 1 0; }
+    .lv-error, .m-error { color: rgb(var(--c-danger)); }
+    .lv-warning, .m-warning { color: rgb(var(--c-warning)); }
+    .lv-info { color: rgb(var(--c-success)); }
+    .lv-debug { color: rgb(var(--c-blue)); }
+    .m-debug { color: rgb(var(--c-mdebug)); }
+    .lv-verbose, .m-verbose { color: rgb(var(--c-dim)); }
+    .rawl .m-info { color: rgb(var(--c-success)); }
+    .rawl .m-debug { color: rgb(var(--c-blue)); }
+    .rawl .m-verbose { color: rgb(var(--c-muted)); }
+    .m-elf { color: rgb(var(--c-cyan)); }
+    .m-tx { color: rgb(var(--c-tx)); }
+    .lr-detail { margin: 4px 0 4px 6.2rem; padding: 6px 8px; background: rgb(var(--c-bg)); border: 1px solid rgb(var(--c-border)); border-radius: 4px; user-select: text; }
+    .lr-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; color: rgb(var(--c-text)); }
+    .lr-detail .lr-json { color: rgb(var(--c-cyan)); }
+    .lr-detail .lr-meta { color: rgb(var(--c-dim)); margin-bottom: 4px; }
+    .lr-detail button { padding: 1px 8px; margin-right: 6px; border: 1px solid rgb(var(--c-border)); border-radius: 4px; color: rgb(var(--c-muted)); background: rgb(var(--c-surface)); }
+    .lr-detail button:hover { color: rgb(var(--c-accent)); border-color: rgb(var(--c-accent)); }
     /* Device Actions menu */
     #deviceActions > summary { list-style: none; }
     #deviceActions > summary::-webkit-details-marker { display: none; }
-    #deviceActions[open] > summary { background: #3b494c; }
-    .da-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 3px; text-align: left; color: #e2e2e8; background: transparent; }
-    .da-item:hover { background: #3b494c; }
-    .da-item i { width: 14px; text-align: center; color: #849396; }
-    .da-item .da-note { margin-left: auto; font-size: 10px; color: #849396; }
+    #deviceActions[open] > summary { background: rgb(var(--c-border)); }
+    .da-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 3px; text-align: left; color: rgb(var(--c-text)); background: transparent; }
+    .da-item:hover { background: rgb(var(--c-border)); }
+    .da-item i { width: 14px; text-align: center; color: rgb(var(--c-dim)); }
+    .da-item .da-note { margin-left: auto; font-size: 0.625rem; color: rgb(var(--c-dim)); }
     .da-item:disabled { opacity: .4; cursor: not-allowed; }
-    .da-danger:hover { background: rgba(255,107,97,.18); color: #ff6b61; }
+    .da-danger:hover { background: rgb(var(--c-danger) / .18); color: rgb(var(--c-danger)); }
     .pop > summary { list-style: none; }
     .pop > summary::-webkit-details-marker { display: none; }
-    .pop[open] > summary { background: #3b494c; }
-    .pop > summary:focus-visible { outline: 2px solid #00e5ff; outline-offset: 2px; }
-    .pop-panel { position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 30; padding: 6px; background: #1e2024;
-      border: 1px solid #3b494c; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
-    .tag-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 6px; border-radius: 3px; text-align: left; color: #bac9cc; }
-    .tag-item:hover { background: #3b494c; }
-    .tag-item.on { color: #e2e2e8; }
-    .tag-item.on i { color: #00e5ff; }
-    .kb { display: flex; align-items: center; gap: 4px; padding: 1px 0; color: #bac9cc; }
-    .kb span { margin-left: auto; color: #e2e2e8; }
-    kbd { padding: 0 5px; border: 1px solid #3b494c; border-radius: 3px; background: #111318; font-size: 10px; }
-.metric-low, .metric-high { border-color: #ffb778; }
-.metric-pin.metric-low, .metric-pin.metric-high { color: #ffb778; font-weight: 700; }
-.metric-badge { margin-left: 8px; padding: 0 6px; border-radius: 3px; font-size: 10px; font-weight: 700; color: #00210d; background: #ffb778; }
-.spark { padding: 8px; background: #1e2024; border: 1px solid #3b494c; border-radius: 6px; }
+    .pop[open] > summary { background: rgb(var(--c-border)); }
+    .pop > summary:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 2px; }
+    .pop-panel { position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 30; padding: 6px; background: rgb(var(--c-surface));
+      border: 1px solid rgb(var(--c-border)); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+    .tag-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 6px; border-radius: 3px; text-align: left; color: rgb(var(--c-muted)); }
+    .tag-item:hover { background: rgb(var(--c-border)); }
+    .tag-item.on { color: rgb(var(--c-text)); }
+    .tag-item.on i { color: rgb(var(--c-accent)); }
+    .kb { display: flex; align-items: center; gap: 4px; padding: 1px 0; color: rgb(var(--c-muted)); }
+    .kb span { margin-left: auto; color: rgb(var(--c-text)); }
+    kbd { padding: 0 5px; border: 1px solid rgb(var(--c-border)); border-radius: 3px; background: rgb(var(--c-bg)); font-size: 0.625rem; }
+.metric-low, .metric-high { border-color: rgb(var(--c-warning)); }
+.metric-pin.metric-low, .metric-pin.metric-high { color: rgb(var(--c-warning)); font-weight: 700; }
+.metric-badge { margin-left: 8px; padding: 0 6px; border-radius: 3px; font-size: 0.625rem; font-weight: 700; color: rgb(var(--c-onSuccess)); background: rgb(var(--c-warning)); }
+.spark { padding: 8px; background: rgb(var(--c-surface)); border: 1px solid rgb(var(--c-border)); border-radius: 6px; }
     .tl-row { display: flex; align-items: baseline; gap: .6rem; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
     .tl-row:hover { background: rgba(255,255,255,.05); }
-    .tl-state { color: #7fc6d1; }
-    .tl-to { color: #e2e2e8; font-weight: 700; }
-    .tl-dur { color: #ffb778; }
-    .tl-src { margin-left: auto; font-size: 10px; color: #849396; }
-    #deviceActions > summary:focus-visible { outline: 2px solid #00e5ff; outline-offset: 2px; }
+    .tl-state { color: rgb(var(--c-tag)); }
+    .tl-to { color: rgb(var(--c-text)); font-weight: 700; }
+    .tl-dur { color: rgb(var(--c-warning)); }
+    .tl-src { margin-left: auto; font-size: 0.625rem; color: rgb(var(--c-dim)); }
+    #deviceActions > summary:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 2px; }
   </style>
   <!-- Prebuilt by tools/build_css.sh; rerun it after changing Tailwind classes.
        Last in <head> so it wins over the inline styles, as the old Play CDN did. -->
@@ -2171,13 +2221,34 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="rail-sep" aria-hidden="true"></div>
     <button class="rail-btn" type="button" data-rail="auto" title="Automation: auto-connect and scripts" onclick="railSelect('auto')"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
     <button class="rail-btn" type="button" data-rail="mcp" title="MCP: AI agent setup and live activity" onclick="railSelect('mcp')"><i class="fa-solid fa-plug-circle-bolt"></i><span id="mcpRailBadge" class="rail-badge hidden">0</span></button>
+    <div class="rail-sep" aria-hidden="true"></div>
+    <button id="appearanceBtn" class="rail-btn" type="button" title="Appearance: theme and text size" aria-label="Appearance" aria-expanded="false" aria-controls="appearancePanel" onclick="toggleAppearance()"><i class="fa-solid fa-palette"></i></button>
   </nav>
+
+  <div id="appearancePanel" class="hidden glass-card p-3 text-xs space-y-2 shadow-lg" role="dialog" aria-label="Appearance">
+    <div class="flex items-center justify-between">
+      <span class="font-bold uppercase tracking-wider">Appearance</span>
+      <button type="button" onclick="toggleAppearance(false)" aria-label="Close" class="text-brand-muted hover:text-brand-accent"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <label class="flex items-center justify-between gap-2">Theme
+      <select id="apTheme" onchange="setAppearance({theme: this.value})" class="bg-brand-surfaceAlt border border-brand-border rounded px-2 py-0.5">
+        <option value="dark">Dark</option><option value="light">Light</option><option value="contrast">High contrast</option>
+      </select>
+    </label>
+    <label class="flex items-center justify-between gap-2">UI text size <span id="apUiVal" class="mono text-brand-muted"></span></label>
+    <input id="apUi" type="range" min="12" max="24" step="1" oninput="setAppearance({uiSize: +this.value})" class="w-full accent-brand-cyan" aria-label="UI text size">
+    <label class="flex items-center justify-between gap-2">Console font size <span id="apConVal" class="mono text-brand-muted"></span></label>
+    <input id="apCon" type="range" min="8" max="32" step="1" oninput="setAppearance({consoleSize: +this.value})" class="w-full accent-brand-cyan" aria-label="Console font size">
+    <div class="pt-1 border-t border-brand-border font-semibold">Custom colors</div>
+    <div id="apColors" class="grid grid-cols-2 gap-x-3 gap-y-1"></div>
+    <button type="button" onclick="resetAppearance()" class="w-full py-1 rounded border border-brand-border hover:border-brand-accent">Reset to defaults</button>
+  </div>
 
   <!-- TOP HEADER -->
   <header id="appHeader" class="bg-brand-surface border-b border-brand-border px-4 py-1.5 flex items-center justify-between shrink-0 shadow-md">
     <div class="flex items-center space-x-2">
       <h1 class="text-sm font-bold tracking-wide text-brand-text" title="Shared serial console, device control and ESP32 flashing">SERIAL DECK</h1>
-      <span id="transportBadge" class="text-[10px] bg-brand-surfaceAlt text-brand-accent px-1.5 py-0.5 rounded border border-brand-border mono font-semibold">UART</span>
+      <span id="transportBadge" class="text-[0.625rem] bg-brand-surfaceAlt text-brand-accent px-1.5 py-0.5 rounded border border-brand-border mono font-semibold">UART</span>
     </div>
 
     <!-- CONNECTION TABS: several physical UARTs can be watched at once -->
@@ -2227,8 +2298,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <button id="quitBtn" onclick="quitApp()" title="Stop Serial Deck (the hub keeps running for other tools)" class="hidden px-3 py-1 rounded text-xs font-bold border border-brand-border text-brand-muted hover:text-brand-danger hover:border-brand-danger transition">Quit</button>
 
-        <label id="autoReconnectLabel" class="flex items-center space-x-1 text-[11px] text-brand-muted cursor-pointer select-none" title="Reconnect by itself when the device is unplugged, reset or the link drops">
-          <input id="autoReconnect" type="checkbox" onchange="setAutoReconnect(this.checked)" class="accent-[#00daf3]">
+        <label id="autoReconnectLabel" class="flex items-center space-x-1 text-[0.6875rem] text-brand-muted cursor-pointer select-none" title="Reconnect by itself when the device is unplugged, reset or the link drops">
+          <input id="autoReconnect" type="checkbox" onchange="setAutoReconnect(this.checked)" class="accent-brand-cyan">
           <span>Auto-reconnect</span>
         </label>
         <button id="connectBtn" onclick="toggleConnect()" class="px-4 py-1 rounded text-xs font-bold transition flex items-center space-x-1.5 bg-brand-accent hover:bg-brand-accentHover text-brand-bg shadow">
@@ -2241,7 +2312,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div id="connectionStatus" role="status" aria-live="polite" class="flex items-center bg-brand-surfaceAlt border border-brand-border rounded-lg px-2.5 py-1 space-x-1.5 text-xs font-medium">
         <i id="connDot" class="fa-solid fa-circle-xmark text-brand-danger" aria-hidden="true"></i>
         <span id="connLabel" class="mono text-brand-muted">Disconnected</span>
-        <button id="linkFixBtn" onclick="linkFix()" class="hidden ml-1 px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px] font-semibold"></button>
+        <button id="linkFixBtn" onclick="linkFix()" class="hidden ml-1 px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[0.6875rem] font-semibold"></button>
       </div>
     </div>
   </header>
@@ -2261,7 +2332,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <details id="deviceActions" class="pop relative">
       <summary class="list-none cursor-pointer select-none px-2.5 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text flex items-center space-x-1.5" title="Reset, bootloader and the DTR / RTS lines">
-        <i class="fa-solid fa-sliders text-[10px]" aria-hidden="true"></i><span>Device Actions</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+        <i class="fa-solid fa-sliders text-[0.625rem]" aria-hidden="true"></i><span>Device Actions</span><i class="fa-solid fa-chevron-down text-[0.5625rem]" aria-hidden="true"></i>
       </summary>
       <div class="absolute right-0 top-full mt-1 z-30 w-60 p-1 bg-brand-surface border border-brand-border rounded shadow-lg" style="box-shadow:0 8px 24px rgba(0,0,0,.5)!important" role="menu">
         <button role="menuitem" onclick="deviceAction('reset')" class="da-item" title="Pulse the reset line (EN / RTS)"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i><span>Reset</span></button>
@@ -2299,28 +2370,28 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="flex items-center justify-center gap-2 my-2">
           <button id="btn-ONOFF" onclick="sendButton('ONOFF')" class="dpad-btn power-btn h-12 w-12 shrink-0 rounded-xl flex flex-col items-center justify-center font-bold text-xs shadow text-brand-danger bg-brand-danger/10 border-brand-danger/30">
             <i class="fa-solid fa-power-off mb-0.5"></i>
-            <span class="text-[10px]">ONOFF</span>
+            <span class="text-[0.625rem]">ONOFF</span>
           </button>
           <button id="btn-LEFT" onclick="sendButton('LEFT')" class="dpad-btn h-12 w-12 shrink-0 rounded-xl flex flex-col items-center justify-center font-bold text-xs shadow">
             <i class="fa-solid fa-arrow-left mb-0.5"></i>
-            <span class="text-[10px]">LEFT</span>
+            <span class="text-[0.625rem]">LEFT</span>
           </button>
           <button id="btn-ENTER" onclick="sendButton('ENTER')" class="dpad-btn h-12 w-12 shrink-0 rounded-xl flex flex-col items-center justify-center font-bold text-xs shadow bg-brand-accent/20 border-brand-accent/50 text-brand-accent">
             <i class="fa-solid fa-circle-check mb-0.5"></i>
-            <span class="text-[10px]">ENTER</span>
+            <span class="text-[0.625rem]">ENTER</span>
           </button>
           <button id="btn-RIGHT" onclick="sendButton('RIGHT')" class="dpad-btn h-12 w-12 shrink-0 rounded-xl flex flex-col items-center justify-center font-bold text-xs shadow">
             <i class="fa-solid fa-arrow-right mb-0.5"></i>
-            <span class="text-[10px]">RIGHT</span>
+            <span class="text-[0.625rem]">RIGHT</span>
           </button>
           <button id="btn-HOME" onclick="sendButton('HOME')" class="dpad-btn h-12 w-12 shrink-0 rounded-xl flex flex-col items-center justify-center font-bold text-xs shadow">
             <i class="fa-solid fa-house mb-0.5"></i>
-            <span class="text-[10px]">HOME</span>
+            <span class="text-[0.625rem]">HOME</span>
           </button>
         </div>
 
         <!-- Keyboard Hint -->
-        <div class="mt-3 pt-2 border-t border-brand-border/60 flex items-center justify-between text-[11px] text-brand-muted">
+        <div class="mt-3 pt-2 border-t border-brand-border/60 flex items-center justify-between text-[0.6875rem] text-brand-muted">
           <span><i class="fa-regular fa-keyboard mr-1"></i> Hotkeys:</span>
           <span class="mono bg-brand-surfaceAlt px-1.5 py-0.5 rounded border border-brand-border">W/A/S/D / Arrows / Space</span>
         </div>
@@ -2365,17 +2436,17 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="flex justify-between"><span class="text-brand-muted">Link</span><span id="sshLink">--</span></div>
         </div>
         <div id="sshScreen" class="hidden mb-3">
-          <div class="flex items-center justify-between text-[10px] text-brand-muted mb-1">
+          <div class="flex items-center justify-between text-[0.625rem] text-brand-muted mb-1">
             <span id="sshScreenLive">stopped</span><span class="mono">rev <span id="sshScreenRev">--</span></span>
           </div>
           <img id="sshScreenImg" alt="Remote screen" class="w-full rounded border border-brand-border bg-black min-h-[4rem] object-contain">
           <div class="flex space-x-2 mt-1">
-            <button id="sshScreenToggle" onclick="sshScreenToggle()" class="flex-1 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px]">Pause</button>
-            <button onclick="sshScreenSave()" class="flex-1 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px]"><i class="fa-solid fa-download mr-1"></i>Save</button>
+            <button id="sshScreenToggle" onclick="sshScreenToggle()" class="flex-1 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[0.6875rem]">Pause</button>
+            <button onclick="sshScreenSave()" class="flex-1 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[0.6875rem]"><i class="fa-solid fa-download mr-1"></i>Save</button>
           </div>
         </div>
         <div id="sshRestart" class="hidden mb-3">
-          <div class="text-[10px] text-brand-muted mb-1">Restart remote service</div>
+          <div class="text-[0.625rem] text-brand-muted mb-1">Restart remote service</div>
           <div id="sshRestartButtons" class="flex flex-wrap gap-1"></div>
         </div>
         <button onclick="sshForgetAsk()" class="w-full py-1.5 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-xs font-semibold transition"><i class="fa-solid fa-link-slash mr-1"></i>Forget device…</button>
@@ -2386,7 +2457,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <button id="sshConfirmOk" class="px-2.5 py-1 rounded bg-brand-danger text-white font-bold">Forget</button>
           </div>
         </div>
-        <div class="mt-3 text-[10px] text-brand-muted">Reset, Bootloader and Flash need a physical UART.</div>
+        <div class="mt-3 text-[0.625rem] text-brand-muted">Reset, Bootloader and Flash need a physical UART.</div>
       </div>
 
       <div id="flashPanel" class="glass-card p-4 flex flex-col">
@@ -2407,7 +2478,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <div class="space-y-2 text-xs">
           <div>
-            <label class="text-[11px] text-brand-muted uppercase font-bold block mb-1">Build Directory</label>
+            <label class="text-[0.6875rem] text-brand-muted uppercase font-bold block mb-1">Build Directory</label>
             <div class="flex space-x-1.5">
               <input id="buildDirInput" type="text" value="build" class="flex-1 bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
               <button onclick="autoDetectElf()" title="Auto detect ELF in build dir" class="px-2 py-1 bg-brand-surfaceAlt hover:bg-brand-border border border-brand-border rounded text-brand-muted hover:text-brand-text">
@@ -2417,7 +2488,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
 
           <div>
-            <label class="text-[11px] text-brand-muted uppercase font-bold block mb-1">ELF Symbols (Addr2Line)</label>
+            <label class="text-[0.6875rem] text-brand-muted uppercase font-bold block mb-1">ELF Symbols (Addr2Line)</label>
             <div class="flex space-x-1.5">
               <input id="elfPathInput" type="text" placeholder="build/firmware.elf" class="flex-1 bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
               <button onclick="loadElfSymbols()" class="px-2.5 py-1 bg-brand-surfaceAlt hover:bg-brand-accent hover:text-brand-bg border border-brand-border rounded font-bold transition">Load</button>
@@ -2426,7 +2497,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
           <!-- Flash Progress Bar -->
           <div id="flashProgressContainer" class="pt-2 hidden">
-            <div class="flex justify-between text-[11px] mb-1 font-semibold">
+            <div class="flex justify-between text-[0.6875rem] mb-1 font-semibold">
               <span id="flashStepLabel" class="text-brand-flash">Flashing...</span>
               <span id="flashPercentLabel" class="mono text-brand-text">0%</span>
             </div>
@@ -2435,7 +2506,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
           </div>
 
-          <button id="flashBtn" onclick="startFlash()" class="w-full mt-2 py-2 bg-brand-flash hover:bg-brand-flashHover text-[#301800] font-bold rounded-lg shadow-md transition flex items-center justify-center space-x-2">
+          <button id="flashBtn" onclick="startFlash()" class="w-full mt-2 py-2 bg-brand-flash hover:bg-brand-flashHover text-brand-onFlash font-bold rounded-lg shadow-md transition flex items-center justify-center space-x-2">
             <i class="fa-solid fa-bolt"></i>
             <span>INITIATE FLASH SEQUENCE</span>
           </button>
@@ -2447,7 +2518,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <!-- SIDEBAR RESIZE / COLLAPSE HANDLE -->
     <div id="sidebarResizeHandle" class="w-5 shrink-0 mx-1 flex items-center justify-center cursor-col-resize">
       <button id="sidebarToggleBtn" onclick="toggleSidebar()" title="Hide/show sidebar" class="w-5 h-10 rounded bg-brand-surface hover:bg-brand-border border border-brand-border text-brand-muted hover:text-brand-accent flex items-center justify-center transition">
-        <i id="sidebarToggleIcon" class="fa-solid fa-chevron-right text-[10px]"></i>
+        <i id="sidebarToggleIcon" class="fa-solid fa-chevron-right text-[0.625rem]"></i>
       </button>
     </div>
 
@@ -2479,7 +2550,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </button>
             <details id="exportMenu" class="pop relative">
               <summary class="tb-btn list-none cursor-pointer select-none" title="Export logs as a file" aria-label="Export logs">
-                <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i><span class="hidden xl:inline">Export</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+                <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i><span class="hidden xl:inline">Export</span><i class="fa-solid fa-chevron-down text-[0.5625rem]" aria-hidden="true"></i>
               </summary>
               <div class="pop-panel w-72 right-0 left-auto">
                 <button type="button" onclick="exportBuffer('filtered')" class="da-item"><i class="fa-solid fa-filter" aria-hidden="true"></i><span>Shown lines</span><span class="da-note">filter applied</span></button>
@@ -2496,24 +2567,24 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- Filter (hides lines) / Find (highlights lines) / level chips / view mode / Pause / Follow -->
         <div id="consoleFilters" class="flex items-center gap-1.5 flex-wrap text-xs">
           <div id="filterGroup" class="tb-group" title="Filter: lines that do not match are hidden (they stay buffered). Terms: level:error tag:wifi text:timeout (all must match); anything else is plain text. Turn on .* for a regular expression.">
-            <i class="fa-solid fa-filter text-[10px] text-brand-muted" aria-hidden="true"></i>
+            <i class="fa-solid fa-filter text-[0.625rem] text-brand-muted" aria-hidden="true"></i>
             <input id="logSearchInput" oninput="onFilterInput()" type="text" autocomplete="off" spellcheck="false" aria-label="Filter lines" placeholder="Filter, or level:error tag:wifi text:timeout" class="tb-input mono w-56">
             <button id="filterRegexBtn" type="button" class="tb-toggle mono" aria-pressed="false" aria-label="Filter: treat as regular expression" title="Regular expression" onclick="toggleRegex('filter')">.*</button>
           </div>
-          <span id="filterError" class="hidden text-brand-danger text-[11px] mono max-w-[16rem] truncate" role="alert"></span>
+          <span id="filterError" class="hidden text-brand-danger text-[0.6875rem] mono max-w-[16rem] truncate" role="alert"></span>
 
           <div id="findGroup" class="tb-group" title="Find: highlights matches in the lines shown; nothing is hidden">
-            <i class="fa-solid fa-magnifying-glass text-[10px] text-brand-muted" aria-hidden="true"></i>
+            <i class="fa-solid fa-magnifying-glass text-[0.625rem] text-brand-muted" aria-hidden="true"></i>
             <input id="findInput" oninput="onFindInput()" onkeydown="findKey(event)" type="text" autocomplete="off" spellcheck="false" aria-label="Find in shown lines" placeholder="Find in view…" class="tb-input mono w-32">
             <button id="findRegexBtn" type="button" class="tb-toggle mono" aria-pressed="false" aria-label="Find: treat as regular expression" title="Regular expression" onclick="toggleRegex('find')">.*</button>
-            <span id="findCount" class="mono text-[10px] text-brand-muted min-w-[2.5rem] text-center" aria-live="polite">0/0</span>
+            <span id="findCount" class="mono text-[0.625rem] text-brand-muted min-w-[2.5rem] text-center" aria-live="polite">0/0</span>
             <button type="button" class="tb-toggle" aria-label="Previous match" title="Previous match (Shift+Enter)" onclick="findStep(-1)"><i class="fa-solid fa-chevron-up" aria-hidden="true"></i></button>
             <button type="button" class="tb-toggle" aria-label="Next match" title="Next match (Enter)" onclick="findStep(1)"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>
           </div>
 
           <details id="tagMenu" class="pop relative">
             <summary class="tb-btn list-none cursor-pointer select-none" title="Show only lines from the chosen ESP-IDF tags (tags seen so far)">
-              <i class="fa-solid fa-tag text-[10px] text-brand-muted" aria-hidden="true"></i><span id="tagSummary" class="max-w-[9rem] truncate">All tags</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+              <i class="fa-solid fa-tag text-[0.625rem] text-brand-muted" aria-hidden="true"></i><span id="tagSummary" class="max-w-[9rem] truncate">All tags</span><i class="fa-solid fa-chevron-down text-[0.5625rem]" aria-hidden="true"></i>
             </summary>
             <div class="pop-panel w-64">
               <input id="tagSearch" oninput="refreshTagList()" type="text" autocomplete="off" spellcheck="false" aria-label="Search tags" placeholder="Search tags…" class="w-full mb-1 px-2 py-1 bg-brand-surfaceAlt border border-brand-border rounded mono text-xs focus:outline-none focus:border-brand-accent">
@@ -2524,7 +2595,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
           <details id="presetMenu" class="pop relative">
             <summary class="tb-btn list-none cursor-pointer select-none" title="Save the current filter (text, regex, tags, severities) and reuse it later">
-              <i class="fa-solid fa-bookmark text-[10px] text-brand-muted" aria-hidden="true"></i><span>Presets</span><i class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i>
+              <i class="fa-solid fa-bookmark text-[0.625rem] text-brand-muted" aria-hidden="true"></i><span>Presets</span><i class="fa-solid fa-chevron-down text-[0.5625rem]" aria-hidden="true"></i>
             </summary>
             <div class="pop-panel w-64">
               <div id="presetList" class="max-h-48 overflow-y-auto"></div>
@@ -2535,7 +2606,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
           </details>
 
-          <div id="levelFilters" role="group" aria-label="Severity filters" class="flex items-center gap-1 mono text-[11px]">
+          <div id="levelFilters" role="group" aria-label="Severity filters" class="flex items-center gap-1 mono text-[0.6875rem]">
             <button onclick="toggleLevelFilter('E')" id="lvl-E" class="chip chip-E" aria-pressed="true" title="Errors">E</button>
             <button onclick="toggleLevelFilter('W')" id="lvl-W" class="chip chip-W" aria-pressed="true" title="Warnings">W</button>
             <button onclick="toggleLevelFilter('I')" id="lvl-I" class="chip chip-I" aria-pressed="true" title="Info">I</button>
@@ -2556,7 +2627,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </button>
           <details id="helpMenu" class="pop relative ml-auto">
             <summary class="tb-btn list-none cursor-pointer select-none" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><i class="fa-regular fa-keyboard" aria-hidden="true"></i></summary>
-            <div class="pop-panel w-72 right-0 left-auto text-[11px] leading-relaxed">
+            <div class="pop-panel w-72 right-0 left-auto text-[0.6875rem] leading-relaxed">
               <div class="font-bold text-brand-text mb-1">Console</div>
               <div class="kb"><kbd>Ctrl</kbd>+<kbd>F</kbd><span>Find in view</span></div>
               <div class="kb"><kbd>Enter</kbd> / <kbd>Shift+Enter</kbd><span>Next / previous match</span></div>
@@ -2577,26 +2648,26 @@ HTML_PAGE = """<!DOCTYPE html>
 
       <!-- VIEW 1: CONSOLE LOG STREAM (optionally split to watch a 2nd connection) -->
       <div id="viewLogs" class="flex-1 flex overflow-hidden relative">
-        <div id="logsPanePrimary" role="log" aria-label="Console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-[#0c0e12]"></div>
+        <div id="logsPanePrimary" role="log" aria-label="Console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-brand-console"></div>
         <div id="splitHandle" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize split pane (drag, or use the arrow keys)" title="Drag to resize" class="hidden shrink-0 w-1.5 cursor-col-resize bg-brand-border hover:bg-brand-accent focus-visible:bg-brand-accent"></div>
         <div id="logsPaneSplit" class="hidden flex-1 flex-col overflow-hidden">
-          <div class="flex items-center justify-between px-2 py-1.5 bg-brand-surfaceAlt/60 border-b border-brand-border text-[11px] shrink-0">
-            <select id="splitConnSelect" aria-label="Connection shown in the split pane" onchange="onSplitConnChange(this.value)" class="bg-transparent text-brand-text mono text-[11px] focus:outline-none cursor-pointer"></select>
+          <div class="flex items-center justify-between px-2 py-1.5 bg-brand-surfaceAlt/60 border-b border-brand-border text-[0.6875rem] shrink-0">
+            <select id="splitConnSelect" aria-label="Connection shown in the split pane" onchange="onSplitConnChange(this.value)" class="bg-transparent text-brand-text mono text-[0.6875rem] focus:outline-none cursor-pointer"></select>
             <div class="flex items-center space-x-2">
-              <button onclick="clearSplitLogs()" title="Clear this pane" aria-label="Clear this pane" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
+              <button onclick="clearSplitLogs()" title="Clear this pane" aria-label="Clear this pane" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-trash-can text-[0.625rem]"></i></button>
               <button onclick="toggleSplitView()" title="Close split view" aria-label="Close split view" class="text-brand-muted hover:text-brand-danger"><i class="fa-solid fa-xmark"></i></button>
             </div>
           </div>
-          <div id="logsPaneSplitContent" role="log" aria-label="Split console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-[#0c0e12]"></div>
+          <div id="logsPaneSplitContent" role="log" aria-label="Split console output" tabindex="0" class="log-pane flex-1 overflow-y-auto p-2 mono text-xs leading-relaxed select-text bg-brand-console"></div>
         </div>
-        <button id="jumpLatest" type="button" onclick="setFollow(true)" class="hidden absolute right-4 bottom-3 z-10 tb-btn" style="background:#00e5ff;color:#00363d;border-color:#00e5ff" title="Resume following the newest line">
+        <button id="jumpLatest" type="button" onclick="setFollow(true)" class="hidden absolute right-4 bottom-3 z-10 tb-btn" style="background:rgb(var(--c-accent));color:rgb(var(--c-onAccent));border-color:rgb(var(--c-accent))" title="Resume following the newest line">
           <i class="fa-solid fa-arrow-down" aria-hidden="true"></i><span>Jump to latest</span>
         </button>
       </div>
 
       <!-- FSM TIMELINE: shown with the Events tab; built only from real transitions -->
-      <section id="viewTimeline" class="hidden shrink-0 max-h-[45%] flex flex-col bg-[#0c0e12] border-b border-brand-border">
-        <div class="flex items-center gap-2 px-3 py-1.5 text-[11px] bg-brand-surfaceAlt/60 border-b border-brand-border">
+      <section id="viewTimeline" class="hidden shrink-0 max-h-[45%] flex flex-col bg-brand-console border-b border-brand-border">
+        <div class="flex items-center gap-2 px-3 py-1.5 text-[0.6875rem] bg-brand-surfaceAlt/60 border-b border-brand-border">
           <i class="fa-solid fa-diagram-project text-brand-purple" aria-hidden="true"></i>
           <span class="font-bold uppercase tracking-wider">FSM timeline</span>
           <span id="fsmTimelineCount" class="tab-count">0</span>
@@ -2610,26 +2681,26 @@ HTML_PAGE = """<!DOCTYPE html>
       </section>
 
       <!-- VIEW 2: CONTROL EVENTS -->
-      <div id="viewEvents" class="flex-1 overflow-y-auto p-3 mono text-xs leading-relaxed space-y-1.5 select-text bg-[#0c0e12] hidden"></div>
+      <div id="viewEvents" class="flex-1 overflow-y-auto p-3 mono text-xs leading-relaxed space-y-1.5 select-text bg-brand-console hidden"></div>
 
       <!-- VIEW 4: INTERACTIVE TERMINAL (Linux / Raw mode) -->
-      <div id="viewTerminal" class="flex-1 flex flex-col overflow-hidden bg-[#0c0e12] hidden">
-        <div id="terminalToolbar" class="shrink-0 flex items-center justify-between px-2 py-1.5 bg-brand-surfaceAlt/60 border-b border-brand-border text-[11px]">
+      <div id="viewTerminal" class="flex-1 flex flex-col overflow-hidden bg-brand-console hidden">
+        <div id="terminalToolbar" class="shrink-0 flex items-center justify-between px-2 py-1.5 bg-brand-surfaceAlt/60 border-b border-brand-border text-[0.6875rem]">
           <span id="termHint" class="text-brand-muted">Click the terminal and type; keys go straight to the UART. Select to copy · Ctrl+Shift+V paste.</span>
           <div class="flex items-center space-x-1.5 mono">
             <button onclick="termSendKey('\x03')" title="Send Ctrl+C (interrupt)" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text">^C</button>
             <button onclick="termSendKey('\x04')" title="Send Ctrl+D (EOF / logout)" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text">^D</button>
             <button onclick="termSendKey('\x1a')" title="Send Ctrl+Z (suspend)" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text">^Z</button>
             <button onclick="termSendBreak()" title="Send a serial BREAK (magic SysRq, U-Boot break-in)" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-brand-text">BREAK</button>
-            <button onclick="termSyncSize()" title="Run stty on the target so full-screen apps (vi, top, htop) use this window size" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text"><i class="fa-solid fa-up-right-and-down-left-from-center text-[10px]"></i> <span id="termSizeLabel">stty</span></button>
-            <button onclick="termClear()" title="Clear terminal" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-brand-muted"><i class="fa-solid fa-trash-can text-[10px]"></i></button>
+            <button onclick="termSyncSize()" title="Run stty on the target so full-screen apps (vi, top, htop) use this window size" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-brand-text"><i class="fa-solid fa-up-right-and-down-left-from-center text-[0.625rem]"></i> <span id="termSizeLabel">stty</span></button>
+            <button onclick="termClear()" title="Clear terminal" class="px-2 py-0.5 bg-brand-surface hover:bg-brand-danger/20 hover:text-brand-danger border border-brand-border rounded text-brand-muted"><i class="fa-solid fa-trash-can text-[0.625rem]"></i></button>
           </div>
         </div>
         <div id="terminalHost" class="flex-1 min-h-0 p-1"></div>
       </div>
 
       <!-- VIEW 3: TELEMETRY INSPECTOR -->
-      <div id="viewInspector" class="flex-1 overflow-y-auto p-4 select-text bg-[#0c0e12] hidden">
+      <div id="viewInspector" class="flex-1 overflow-y-auto p-4 select-text bg-brand-console hidden">
         <h3 class="text-sm font-bold text-brand-accent mb-3 uppercase tracking-wider flex items-center space-x-2">
           <i class="fa-solid fa-database"></i>
           <span>Parsed Telemetry & JSON Snapshot</span>
@@ -2640,9 +2711,9 @@ HTML_PAGE = """<!DOCTYPE html>
             <button id="metricEditBtn" type="button" onclick="toggleMetricEdit()" class="tb-btn" aria-pressed="false" title="Reorder, switch on or off, choose chart or text, pin, edit or delete metrics"><i class="fa-solid fa-pen" aria-hidden="true"></i><span>Edit</span></button>
             <button id="metricAddBtn" type="button" onclick="addMetric()" class="tb-btn" title="Add a metric: the text before a number in the log, with a name, unit and limits"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>Add metric</span></button>
             <button id="metricReloadBtn" type="button" onclick="loadMetricRules()" class="tb-btn" title="Reload the rule files"><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>Reload</span></button>
-            <span id="metricSource" class="mono text-[10px] text-brand-muted truncate"></span>
+            <span id="metricSource" class="mono text-[0.625rem] text-brand-muted truncate"></span>
           </div>
-          <div id="metricProblems" role="status" class="mono text-[11px] mb-1"></div>
+          <div id="metricProblems" role="status" class="mono text-[0.6875rem] mb-1"></div>
           <div id="metricRulesList" class="mb-2"></div>
           <div id="metricCards" class="grid gap-3 mb-3" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))"></div>
           <div id="metricEditor" class="hidden mb-3 p-2 border border-brand-border rounded bg-brand-surface"></div>
@@ -2658,7 +2729,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <form id="txBar" onsubmit="sendTx(event)" class="shrink-0 border-t border-brand-border bg-brand-surfaceAlt/80 text-xs">
         <div class="flex items-center gap-2 px-2 py-1">
           <button type="button" id="txToggle" onclick="toggleTx()" aria-expanded="true" aria-controls="txBody" title="Collapse or expand the TX composer (your draft is kept)" class="flex items-center gap-1.5 font-bold mono text-brand-tx">
-            <i id="txChevron" class="fa-solid fa-chevron-down text-[9px]" aria-hidden="true"></i><span>TX</span>
+            <i id="txChevron" class="fa-solid fa-chevron-down text-[0.5625rem]" aria-hidden="true"></i><span>TX</span>
           </button>
           <span id="txTarget" class="mono text-brand-muted truncate max-w-[14rem]" title="The connection TX is sent to">no connection</span>
           <div id="txBody" class="flex items-center gap-2 flex-1 min-w-0">
@@ -2674,7 +2745,7 @@ HTML_PAGE = """<!DOCTYPE html>
               <option value="crlf">CRLF</option>
             </select>
             <button id="txSendBtn" type="submit" class="px-3 py-1 rounded-lg font-bold bg-brand-tx/20 text-brand-tx border border-brand-tx/40 hover:bg-brand-tx/30 transition flex items-center space-x-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
-              <i class="fa-solid fa-paper-plane text-[10px]" aria-hidden="true"></i>
+              <i class="fa-solid fa-paper-plane text-[0.625rem]" aria-hidden="true"></i>
               <span>Send</span>
             </button>
           </div>
@@ -2682,7 +2753,7 @@ HTML_PAGE = """<!DOCTYPE html>
       </form>
 
       <!-- STATUS BAR: measured values only; unknown values are shown as -- or left out -->
-      <div id="statusBar" role="status" class="shrink-0 flex items-center gap-x-4 gap-y-0.5 flex-wrap px-3 py-0.5 border-t border-brand-border bg-brand-bg text-[11px] mono text-brand-muted">
+      <div id="statusBar" role="status" class="shrink-0 flex items-center gap-x-4 gap-y-0.5 flex-wrap px-3 py-0.5 border-t border-brand-border bg-brand-bg text-[0.6875rem] mono text-brand-muted">
         <span id="sbConn" class="flex items-center gap-1.5"></span>
         <span id="sbFollow"></span>
         <span id="sbRate" title="Measured from what this window received in the last second (line text only in Control mode)">RX --</span>
@@ -2710,7 +2781,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <p class="text-brand-muted">Opening a UART can reset the board (DTR/RTS), so nothing here is on until you turn it on.
           The <b>Auto-reconnect</b> checkbox next to Connect handles a device that drops while you are using it.</p>
         <label class="flex items-center space-x-2 cursor-pointer">
-          <input id="autoRestore" type="checkbox" onchange="saveAutoSettings()" class="accent-[#00daf3]">
+          <input id="autoRestore" type="checkbox" onchange="saveAutoSettings()" class="accent-brand-cyan">
           <span>Reconnect the ports I had open when I last closed Serial Deck</span>
         </label>
         <div>
@@ -2740,26 +2811,26 @@ HTML_PAGE = """<!DOCTYPE html>
         <div id="scriptRunsBox" class="hidden">
           <div class="font-semibold text-brand-text mb-1">Runs</div>
           <div id="scriptRuns" class="space-y-1.5"></div>
-          <pre id="scriptOutput" class="hidden mono text-[11px] bg-[#0c0e12] border border-brand-border rounded p-2 mt-2 max-h-64 overflow-auto whitespace-pre-wrap"></pre>
+          <pre id="scriptOutput" class="hidden mono text-[0.6875rem] bg-brand-console border border-brand-border rounded p-2 mt-2 max-h-64 overflow-auto whitespace-pre-wrap"></pre>
         </div>
       </div>
 
       <div class="glass-card p-4 space-y-3 text-xs">
         <div class="flex items-center justify-between">
           <h3 class="font-bold text-brand-text">JavaScript snippets</h3>
-          <span class="text-[10px] mono px-2 py-0.5 rounded border border-brand-border text-brand-muted">sandboxed · runs in this window only</span>
+          <span class="text-[0.625rem] mono px-2 py-0.5 rounded border border-brand-border text-brand-muted">sandboxed · runs in this window only</span>
         </div>
         <p class="text-brand-muted">Quick scripts in the browser. They run in an isolated sandbox (no access to this page, its storage or
           your files) and can only <span class="mono">dev.send</span> to the connected device and read what it sends. They stop when you
           close this window; use a Python script for anything long-running.</p>
-        <textarea id="jsCode" spellcheck="false" rows="8" class="w-full bg-[#0c0e12] border border-brand-border rounded p-2 mono text-[12px] text-brand-text focus:outline-none focus:border-brand-accent"
+        <textarea id="jsCode" spellcheck="false" rows="8" class="w-full bg-brand-console border border-brand-border rounded p-2 mono text-[0.75rem] text-brand-text focus:outline-none focus:border-brand-accent"
           placeholder="await dev.expect(/login:/, 10000);&#10;await dev.sendLine('root');&#10;dev.log('logged in');"></textarea>
         <div class="flex items-center gap-2">
           <button id="jsRunBtn" onclick="jsRun()" class="px-3 py-1.5 rounded font-bold bg-brand-accent text-brand-bg"><i class="fa-solid fa-play mr-1"></i>Run</button>
           <button id="jsStopBtn" onclick="jsStop()" class="px-3 py-1.5 rounded font-semibold border border-brand-border" disabled><i class="fa-solid fa-stop mr-1"></i>Stop</button>
           <span id="jsState" class="mono text-brand-muted">idle</span>
         </div>
-        <pre id="jsOutput" class="mono text-[11px] bg-[#0c0e12] border border-brand-border rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap hidden"></pre>
+        <pre id="jsOutput" class="mono text-[0.6875rem] bg-brand-console border border-brand-border rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap hidden"></pre>
       </div>
     </div>
   </section>
@@ -2771,7 +2842,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="flex items-center space-x-2">
           <i class="fa-solid fa-plug-circle-bolt text-brand-accent"></i>
           <h2 class="text-sm font-bold tracking-wider uppercase">MCP — AI agent access</h2>
-          <span id="mcpSdkBadge" class="text-[10px] mono px-2 py-0.5 rounded border border-brand-border text-brand-muted">checking…</span>
+          <span id="mcpSdkBadge" class="text-[0.625rem] mono px-2 py-0.5 rounded border border-brand-border text-brand-muted">checking…</span>
         </div>
         <div class="flex items-center gap-2 text-xs">
           <label class="flex items-center gap-1 text-brand-muted"><input id="mcpAutoRefresh" type="checkbox" checked> auto refresh</label>
@@ -2789,7 +2860,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </p>
           <h3 class="text-xs font-bold uppercase text-brand-muted pt-1">Policy (chosen by you, not the agent)</h3>
           <div id="mcpPolicyTable" class="text-xs space-y-1"></div>
-          <p class="text-[11px] text-brand-muted">Your MCP client still asks before each call. Use <span class="mono">interact</span>
+          <p class="text-[0.6875rem] text-brand-muted">Your MCP client still asks before each call. Use <span class="mono">interact</span>
             day to day; register a <span class="mono">hardware</span> server only when you want the agent to reset or flash.</p>
         </div>
 
@@ -2810,20 +2881,20 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="mcp-card p-4 space-y-3">
         <div class="flex items-center justify-between">
           <h3 class="text-xs font-bold uppercase text-brand-muted">Running MCP servers</h3>
-          <span id="mcpUpdated" class="text-[10px] mono text-brand-muted"></span>
+          <span id="mcpUpdated" class="text-[0.625rem] mono text-brand-muted"></span>
         </div>
         <div id="mcpServers" class="space-y-3 text-xs"></div>
       </div>
 
       <div class="mcp-card p-4 space-y-2 text-xs">
         <h3 class="text-xs font-bold uppercase text-brand-muted">Typical agent flows</h3>
-        <div class="grid gap-2 md:grid-cols-2 mono text-[11px]">
+        <div class="grid gap-2 md:grid-cols-2 mono text-[0.6875rem]">
           <div><span class="text-brand-accent">observe</span>  serial_list_ports → serial_connect → serial_query("fsm") → serial_logs / serial_wait_for</div>
           <div><span class="text-brand-accent">crash</span>    serial_wait_for(["Guru Meditation","Backtrace"]) → serial_symbolize(text, elf)</div>
           <div><span class="text-brand-danger">reset</span>    serial_reset(wait_for=["main_task: Calling app_main"])</div>
           <div><span class="text-brand-flash">flash</span>    serial_flash_preview(build) → you approve → serial_flash_start(token) → serial_flash_status</div>
         </div>
-        <p class="text-[11px] text-brand-muted">An <span class="mono">outcome: "unknown"</span> result is never retried
+        <p class="text-[0.6875rem] text-brand-muted">An <span class="mono">outcome: "unknown"</span> result is never retried
           automatically. Full guide: <span class="mono">docs/MCP.md</span>.</p>
       </div>
     </div>
@@ -2851,7 +2922,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <input id="pairUser" value="root" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
         <label class="block"><span class="text-brand-muted font-semibold">Remote socket</span>
           <input id="pairSocket" placeholder="/run/console.sock" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
-          <span class="block mt-1 text-[11px] text-brand-muted">Absolute path of the Unix stream socket on the host.</span></label>
+          <span class="block mt-1 text-[0.6875rem] text-brand-muted">Absolute path of the Unix stream socket on the host.</span></label>
         <div><span class="text-brand-muted font-semibold">Sign in with</span>
           <div class="mt-1 flex border border-brand-border rounded overflow-hidden w-max" role="group">
             <button id="pairAuthPassword" onclick="pairAuth('password')" class="px-2.5 py-1 font-semibold">Password</button>
@@ -2859,7 +2930,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </div></div>
         <label id="pairPasswordRow" class="block"><span class="text-brand-muted font-semibold">Password</span>
           <input id="pairPassword" type="password" autocomplete="off" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent">
-          <span class="block mt-1 text-[11px] text-brand-muted">Used once to install a dedicated Serial Deck key on the host. Never stored or logged.</span></label>
+          <span class="block mt-1 text-[0.6875rem] text-brand-muted">Used once to install a dedicated Serial Deck key on the host. Never stored or logged.</span></label>
         <div id="pairKeyRow" class="hidden space-y-2">
           <label class="block"><span class="text-brand-muted font-semibold">Key path</span>
             <input id="pairKeyPath" placeholder="~/.ssh/id_ed25519" class="mt-1 w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1.5 mono focus:outline-none focus:border-brand-accent"></label>
@@ -2996,7 +3067,7 @@ HTML_PAGE = """<!DOCTYPE html>
     // Hotkey listener
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY'].includes(document.activeElement.tagName)) return;
-      if (document.activeElement.closest('.log-pane, #deviceActions')) return;
+      if (document.activeElement.closest('.log-pane, #deviceActions, #appearancePanel')) return;
       if (['pairModal', 'hostKeyModal', 'passphraseModal'].some(id => !document.getElementById(id).classList.contains('hidden'))) {
         if (e.key === 'Escape') { pairClose(); passphraseClose(); document.getElementById('hostKeyModal').classList.add('hidden'); }
         return;
@@ -3499,14 +3570,14 @@ HTML_PAGE = """<!DOCTYPE html>
       up.setAttribute('aria-label', 'Move ' + rule.label + ' up'); up.disabled = index === 0;
       down.setAttribute('aria-label', 'Move ' + rule.label + ' down'); down.disabled = index === all.length - 1;
       const check = (text, checked, onchange, title) => {
-        const wrap = mkEl('label', 'flex items-center gap-1 text-[11px]');
+        const wrap = mkEl('label', 'flex items-center gap-1 text-[0.6875rem]');
         const box = mkEl('input'); box.type = 'checkbox'; box.checked = checked;
         box.addEventListener('change', () => onchange(box.checked));
         wrap.title = title;
         wrap.append(box, mkEl('span', '', text));
         return wrap;
       };
-      const show = mkEl('select', 'bg-brand-surfaceAlt border border-brand-border rounded text-[11px] px-1');
+      const show = mkEl('select', 'bg-brand-surfaceAlt border border-brand-border rounded text-[0.6875rem] px-1');
       show.setAttribute('aria-label', 'Show ' + rule.label + ' as');
       [['both', 'Chart + text'], ['chart', 'Chart'], ['text', 'Text']].forEach(([value, text]) => {
         const option = mkEl('option', '', text); option.value = value; show.appendChild(option);
@@ -3532,13 +3603,13 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!metricDraft) return;
       const d = metricDraft;
       const field = (id, label, value, type, hint) => {
-        const wrap = mkEl('label', 'block text-[11px] text-brand-muted');
+        const wrap = mkEl('label', 'block text-[0.6875rem] text-brand-muted');
         const input = mkEl('input', 'mt-1 w-full px-2 py-1 bg-brand-surfaceAlt border border-brand-border rounded mono text-xs text-brand-text focus:outline-none focus:border-brand-accent');
         input.id = id; input.type = type || 'text'; input.value = value === null || value === undefined ? '' : value;
         if (type === 'number') input.step = 'any';
         input.addEventListener('input', refreshDraftMatches);
         wrap.append(label, input);
-        if (hint) wrap.appendChild(mkEl('span', 'block text-[10px]', hint));
+        if (hint) wrap.appendChild(mkEl('span', 'block text-[0.625rem]', hint));
         return wrap;
       };
       const grid = mkEl('div', 'grid gap-2');
@@ -3553,7 +3624,7 @@ HTML_PAGE = """<!DOCTYPE html>
       pin.append(check, mkEl('span', '', 'Show in the status bar'));
       const actions = mkEl('div', 'flex items-center gap-2 mt-2');
       actions.append(mkBtn('Save', saveDraft, 'tb-btn font-bold'), mkBtn('Cancel', () => { metricDraft = null; renderMetricsUi(); }),
-                     mkEl('span', 'mono text-[11px] text-brand-muted'));
+                     mkEl('span', 'mono text-[0.6875rem] text-brand-muted'));
       actions.lastChild.id = 'mdMatches';
       box.append(mkEl('div', 'font-bold text-xs mb-1', metricDraftIsNew ? 'New metric' : 'Edit metric'), grid, pin, actions);
       refreshDraftMatches();
@@ -3570,7 +3641,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const pts = values.map((v, i) => (values.length === 1 ? w : (i * w) / (values.length - 1)).toFixed(1) + ',' +
           (h - 2 - ((v - lo) / span) * (h - 4)).toFixed(1)).join(' ');
         const line = document.createElementNS(SVG_NS, 'polyline');
-        line.setAttribute('fill', 'none'); line.setAttribute('stroke', '#00daf3'); line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'rgb(var(--c-cyan))'); line.setAttribute('stroke-width', '1.5');
         line.setAttribute('points', pts);
         svg.appendChild(line);
       }
@@ -3580,7 +3651,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function metricCard(m) {
       const card = mkEl('div', 'spark metric-card' + (m.state !== 'ok' ? ' metric-' + m.state : ''));
       const head = mkEl('div', 'flex items-center gap-1');
-      head.append(mkEl('span', 'mono text-[11px] text-brand-muted truncate', m.label), mkEl('span', 'tl-src', m.source));
+      head.append(mkEl('span', 'mono text-[0.6875rem] text-brand-muted truncate', m.label), mkEl('span', 'tl-src', m.source));
       const value = mkEl('div', 'mono text-sm text-brand-text', m.valueText + (m.unit && m.count ? ' ' + m.unit : ''));
       if (m.badge) {
         const badge = mkEl('span', 'metric-badge');
@@ -3596,7 +3667,7 @@ HTML_PAGE = """<!DOCTYPE html>
       } else {
         card.append(head, value, sparkNode(m.values));
       }
-      card.append(mkEl('div', 'mono text-[10px] text-brand-muted', m.count
+      card.append(mkEl('div', 'mono text-[0.625rem] text-brand-muted', m.count
                     ? (m.show === 'chart' ? 'now ' + m.valueText + (m.unit ? ' ' + m.unit : '') + ' · ' : '') +
                       'min ' + fmtMetric(m.min) + ' · max ' + fmtMetric(m.max) + ' · ' + m.count + ' samples'
                     : 'no value seen yet'));
@@ -3828,7 +3899,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       let html = '';
       if (older) {
-        html = '<div class="log-note text-[11px] text-brand-muted px-1 py-1">' + older.toLocaleString() +
+        html = '<div class="log-note text-[0.6875rem] text-brand-muted px-1 py-1">' + older.toLocaleString() +
           ' older matching lines are not drawn (only the newest ' + DOM_MAX.toLocaleString() +
           ' are). Narrow the filter, or use Export for the hub history.</div>';
       }
@@ -3959,7 +4030,7 @@ HTML_PAGE = """<!DOCTYPE html>
       if (next && next.classList.contains('lr-detail')) { next.remove(); return; }
       const entry = entryOf(row), p = parsedLine(entry);
       const box = document.createElement('div');
-      box.className = 'lr-detail text-[11px]';
+      box.className = 'lr-detail text-[0.6875rem]';
       const meta = document.createElement('div');
       meta.className = 'lr-meta';
       meta.textContent = [entry.time, entry.level, p ? 'tag ' + p.tag : '', p ? 'device tick ' + p.tick + ' ms' : ''].filter(Boolean).join(' - ');
@@ -4081,7 +4152,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function applyTxCollapsed() {
       document.getElementById('txBody').style.display = txCollapsed ? 'none' : '';
       document.getElementById('txToggle').setAttribute('aria-expanded', String(!txCollapsed));
-      document.getElementById('txChevron').className = 'fa-solid text-[9px] ' + (txCollapsed ? 'fa-chevron-right' : 'fa-chevron-down');
+      document.getElementById('txChevron').className = 'fa-solid text-[0.5625rem] ' + (txCollapsed ? 'fa-chevron-right' : 'fa-chevron-down');
     }
     function toggleTx() {
       txCollapsed = !txCollapsed;
@@ -4122,7 +4193,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }));
       if (!items.length) {
         const empty = document.createElement('div');
-        empty.className = 'text-[11px] text-brand-muted px-1 py-2';
+        empty.className = 'text-[0.6875rem] text-brand-muted px-1 py-2';
         empty.textContent = names.size ? 'No tag matches.' : 'No ESP-IDF tags seen yet.';
         list.appendChild(empty);
       }
@@ -4209,7 +4280,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }));
       if (!list.length) {
         const empty = document.createElement('div');
-        empty.className = 'text-[11px] text-brand-muted px-1 py-1';
+        empty.className = 'text-[0.6875rem] text-brand-muted px-1 py-1';
         empty.textContent = 'No saved filters yet.';
         box.appendChild(empty);
       }
@@ -4354,7 +4425,7 @@ HTML_PAGE = """<!DOCTYPE html>
         // FNV-1a, then a golden-angle step: similar names (wifi / spi) still land far apart on the hue wheel.
         let h = 2166136261;
         for (let i = 0; i < tag.length; i++) h = Math.imul(h ^ tag.charCodeAt(i), 16777619) >>> 0;
-        c = 'hsl(' + Math.round((h % 1000) * 137.508 % 360) + ',55%,68%)';
+        c = 'hsl(' + Math.round((h % 1000) * 137.508 % 360) + ',55%,var(--tag-l))';
         tagHues.set(tag, c);
       }
       return c;
@@ -4444,7 +4515,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const w = 140, h = 28, lo = Math.min(...values), hi = Math.max(...values), span = hi - lo || 1;
       const pts = values.map((v, i) => (values.length === 1 ? w : (i * w) / (values.length - 1)).toFixed(1) + ',' +
         (h - 2 - ((v - lo) / span) * (h - 4)).toFixed(1)).join(' ');
-      return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="trend"><polyline fill="none" stroke="#00daf3" stroke-width="1.5" points="' + pts + '"/></svg>';
+      return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="trend"><polyline fill="none" stroke="rgb(var(--c-cyan))" stroke-width="1.5" points="' + pts + '"/></svg>';
     }
 
     function renderSparks() {
@@ -4454,9 +4525,9 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('telSparkEmpty').classList.toggle('hidden', keys.length > 0);
       box.innerHTML = keys.map(k => {
         const v = hist[k];
-        return '<div class="spark"><div class="mono text-[11px] text-brand-muted truncate" title="' + escapeHtml(k) + '">' + escapeHtml(k) +
+        return '<div class="spark"><div class="mono text-[0.6875rem] text-brand-muted truncate" title="' + escapeHtml(k) + '">' + escapeHtml(k) +
           '</div><div class="mono text-sm text-brand-text">' + escapeHtml(String(v[v.length - 1])) + '</div>' + sparkSvg(v) +
-          '<div class="mono text-[10px] text-brand-muted">min ' + escapeHtml(String(Math.min(...v))) + ' · max ' + escapeHtml(String(Math.max(...v))) + ' · ' + v.length + ' samples</div></div>';
+          '<div class="mono text-[0.625rem] text-brand-muted">min ' + escapeHtml(String(Math.min(...v))) + ' · max ' + escapeHtml(String(Math.max(...v))) + ' · ' + v.length + ' samples</div></div>';
       }).join('');
     }
 
@@ -4475,10 +4546,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
       div.innerHTML = `
         <div class="flex items-center justify-between pb-1 mb-1 border-b border-brand-border/50">
-          <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${badgeClass}">${entry.frame_type} [seq=${entry.sequence}]</span>
-          <span class="text-brand-muted text-[10px]">${entry.time || ''}</span>
+          <span class="px-2 py-0.5 rounded text-[0.625rem] font-bold border ${badgeClass}">${entry.frame_type} [seq=${entry.sequence}]</span>
+          <span class="text-brand-muted text-[0.625rem]">${entry.time || ''}</span>
         </div>
-        <pre class="text-brand-text text-[11px] overflow-x-auto">${escapeHtml(JSON.stringify(entry.message, null, 2))}</pre>
+        <pre class="text-brand-text text-[0.6875rem] overflow-x-auto">${escapeHtml(JSON.stringify(entry.message, null, 2))}</pre>
       `;
       container.appendChild(div);
       if (autoScroll) container.scrollTop = container.scrollHeight;
@@ -4818,9 +4889,8 @@ HTML_PAGE = """<!DOCTYPE html>
         convertEol: false,
         scrollback: 10000,
         fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 13,
-        theme: { background: '#0c0e12', foreground: '#e2e2e8', cursor: '#00e5ff', selectionBackground: '#3b494c' },
       });
+      applyTerminalAppearance();
       termFitAddon = new FitAddon.FitAddon();
       term.loadAddon(termFitAddon);
       term.open(document.getElementById('terminalHost'));
@@ -5138,7 +5208,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.title = id;
-        chip.className = 'flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition mono ' +
+        chip.className = 'flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[0.6875rem] font-semibold border transition mono ' +
           (id === connId
             ? 'bg-brand-surface text-brand-text border-brand-accent/60'
             : 'bg-transparent text-brand-muted border-brand-border hover:text-brand-text hover:bg-brand-surface');
@@ -5146,7 +5216,7 @@ HTML_PAGE = """<!DOCTYPE html>
         chip.setAttribute('role', 'tab');
         chip.setAttribute('aria-selected', String(id === connId));
         chip.title = id + ' · ' + cs.text;
-        chip.innerHTML = `<i class="${cs.icon} ${cs.cls} text-[9px]" aria-hidden="true"></i><span>${escapeHtml(connLabel(id, conn.status))}</span>`;
+        chip.innerHTML = `<i class="${cs.icon} ${cs.cls} text-[0.5625rem]" aria-hidden="true"></i><span>${escapeHtml(connLabel(id, conn.status))}</span>`;
         if (id !== 'default') {
           const closeBtn = document.createElement('span');
           closeBtn.className = 'ml-1 text-brand-muted hover:text-brand-danger';
@@ -5292,11 +5362,11 @@ HTML_PAGE = """<!DOCTYPE html>
       const icon = document.getElementById('sidebarToggleIcon');
       aside.classList.toggle('collapsed', sidebarCollapsed);
       if (sidebarCollapsed) {
-        icon.className = 'fa-solid fa-chevron-right text-[10px]';
+        icon.className = 'fa-solid fa-chevron-right text-[0.625rem]';
       } else {
         const available = document.getElementById('telemetryPanel').clientWidth;
         aside.style.width = Math.min(sidebarWidth, Math.max(260, available * .34)) + 'px';
-        icon.className = 'fa-solid fa-chevron-left text-[10px]';
+        icon.className = 'fa-solid fa-chevron-left text-[0.625rem]';
       }
       updateRail();
       requestAnimationFrame(termFit);
@@ -5504,7 +5574,7 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('sshRestart').classList.toggle('hidden', !args.length);
         document.getElementById('sshRestartButtons').replaceChildren(...args.map(arg => {
           const b = document.createElement('button');
-          b.className = 'px-2 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[11px] mono';
+          b.className = 'px-2 py-1 bg-brand-surface hover:bg-brand-border border border-brand-border rounded text-[0.6875rem] mono';
           b.innerText = arg;
           b.onclick = () => sshRestart(dev.name, arg);
           return b;
@@ -6032,7 +6102,7 @@ HTML_PAGE = """<!DOCTYPE html>
         auto.className = 'flex items-center space-x-1 text-brand-muted cursor-pointer';
         const box2 = document.createElement('input');
         box2.type = 'checkbox';
-        box2.className = 'accent-[#00daf3]';
+        box2.className = 'accent-brand-cyan';
         box2.checked = scriptData.autorun.some(r => r.name === item.name && r.enabled);
         box2.onchange = () => setScriptAutorun(item.name, box2.checked, box2);
         const label = document.createElement('span');
@@ -6045,7 +6115,7 @@ HTML_PAGE = """<!DOCTYPE html>
       runsBox.classList.toggle('hidden', scriptData.runs.length === 0);
       document.getElementById('scriptRuns').replaceChildren(...scriptData.runs.slice(0, 8).map(run => {
         const row = document.createElement('div');
-        row.className = 'flex items-center gap-2 mono text-[11px]';
+        row.className = 'flex items-center gap-2 mono text-[0.6875rem]';
         const color = run.state === 'running' ? 'text-brand-success' : (run.state === 'failed' ? 'text-brand-danger' : 'text-brand-muted');
         const state = document.createElement('span');
         state.className = color + ' w-16';
@@ -6244,7 +6314,7 @@ HTML_PAGE = """<!DOCTYPE html>
         `<div class="text-brand-muted">Claude Code (user scope)</div>${codeBlock(cmd.claude)}` +
         `<div class="text-brand-muted">Codex</div>${codeBlock(cmd.codex)}` +
         `<div class="text-brand-muted">Claude Desktop / Cursor (JSON)</div>${codeBlock(cmd.json)}` +
-        `<div class="text-[11px] text-brand-muted">Re-run the add command to change the policy; tools load in the next client session.</div>`;
+        `<div class="text-[0.6875rem] text-brand-muted">Re-run the add command to change the policy; tools load in the next client session.</div>`;
     }
 
     function renderMcpRegistrations() {
@@ -6258,7 +6328,7 @@ HTML_PAGE = """<!DOCTYPE html>
           `<span class="mono px-1.5 rounded border border-brand-border">--allow ${escapeHtml(reg.policy)}</span>${off ? '<span class="text-brand-warning">disabled</span>' : ''}</div>`;
       };
       document.getElementById('mcpRegistrations').innerHTML =
-        '<div class="text-brand-muted uppercase text-[10px] font-bold">Registered</div>' +
+        '<div class="text-brand-muted uppercase text-[0.625rem] font-bold">Registered</div>' +
         row('Claude Code', regs.claude, regs.claude_cli) + row('Codex', regs.codex, regs.codex_cli);
     }
 
@@ -6268,7 +6338,7 @@ HTML_PAGE = """<!DOCTYPE html>
                      hardware: '+ reset, ROM bootloader, flash' };
       document.getElementById('mcpPolicyTable').innerHTML = ['observe', 'interact', 'hardware'].map(level =>
         `<div class="flex gap-2"><span class="mono w-20 shrink-0 ${level === 'hardware' ? 'text-brand-danger' : 'text-brand-accent'}">${level}</span>` +
-        `<span>${desc[level]}<br><span class="mono text-[10px] text-brand-muted">${mcpData.tools[level].join(', ')}</span></span></div>`).join('');
+        `<span>${desc[level]}<br><span class="mono text-[0.625rem] text-brand-muted">${mcpData.tools[level].join(', ')}</span></span></div>`).join('');
     }
 
     function fmtAgo(seconds) {
@@ -6313,7 +6383,7 @@ HTML_PAGE = """<!DOCTYPE html>
           `<span class="mono px-1.5 rounded border border-brand-border">--allow ${escapeHtml(srv.policy)}</span>` +
           `<span class="text-brand-muted">up ${fmtAgo(srv.uptime_s || 0)}</span>${jobs}</div>` +
           `<div class="flex items-center gap-1 flex-wrap">${sessions}</div>` +
-          (calls ? `<div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-brand-muted text-[10px] uppercase">` +
+          (calls ? `<div class="overflow-x-auto"><table class="w-full text-[0.6875rem]"><thead><tr class="text-left text-brand-muted text-[0.625rem] uppercase">` +
             `<th class="pr-2">time</th><th class="pr-2">tool</th><th class="pr-2">args</th><th class="pr-2">state</th><th class="pr-2">took</th><th>result</th></tr></thead><tbody>${calls}</tbody></table></div>`
             : '<div class="text-brand-muted">no tool calls yet</div>') +
           `</div>`;
@@ -6329,7 +6399,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       const sdk = document.getElementById('mcpSdkBadge');
       sdk.textContent = mcpData.sdk_installed ? 'SDK installed' : 'SDK missing';
-      sdk.className = 'text-[10px] mono px-2 py-0.5 rounded border ' +
+      sdk.className = 'text-[0.625rem] mono px-2 py-0.5 rounded border ' +
         (mcpData.sdk_installed ? 'border-brand-success/50 text-brand-success' : 'border-brand-warning/50 text-brand-warning');
       if (!document.getElementById('mcpInstall').innerHTML) renderMcpInstall();
       renderMcpPolicies();
@@ -6375,6 +6445,66 @@ HTML_PAGE = """<!DOCTYPE html>
     syncFollowUi();
     loadMetricRules();
     bootstrapConnections();
+    // ---- Appearance (theme, custom colors, text sizes) ----
+    function tokenHex(t) {
+      const v = getComputedStyle(document.documentElement).getPropertyValue('--c-' + t).trim().split(/\\s+/).map(Number);
+      return '#' + v.map(n => (n | 0).toString(16).padStart(2, '0')).join('');
+    }
+    function syncAppearanceUi() {
+      const root = document.documentElement;
+      document.getElementById('apTheme').value = root.dataset.theme;
+      const ui = parseInt(root.style.fontSize, 10) || 16;
+      const con = parseInt(getComputedStyle(root).getPropertyValue('--console-font'), 10) || 12;
+      document.getElementById('apUi').value = ui; document.getElementById('apUiVal').textContent = ui + 'px';
+      document.getElementById('apCon').value = con; document.getElementById('apConVal').textContent = con + 'px';
+      const box = document.getElementById('apColors');
+      box.replaceChildren(...THEME_TOKENS.map(t => {
+        const label = document.createElement('label');
+        label.className = 'flex items-center justify-between gap-1';
+        label.textContent = t;
+        const input = document.createElement('input');
+        input.type = 'color'; input.value = tokenHex(t); input.setAttribute('aria-label', t + ' color');
+        input.oninput = () => setAppearance({colors: Object.assign({}, appearanceState.colors, {[t]: input.value})}, false);
+        label.appendChild(input);
+        return label;
+      }));
+    }
+    function setAppearance(patch, rebuild = true) {
+      const a = Object.assign({}, appearanceState, patch);
+      // Switching preset drops custom colors so the new preset shows as designed.
+      if (patch.theme) delete a.colors;
+      appearanceState = a;
+      try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(a)); } catch (err) {}
+      applyAppearance(a);
+      applyTerminalAppearance();
+      if (rebuild) syncAppearanceUi();
+    }
+    function resetAppearance() {
+      appearanceState = {};
+      try { localStorage.removeItem(APPEARANCE_KEY); } catch (err) {}
+      applyAppearance({}); applyTerminalAppearance(); syncAppearanceUi();
+    }
+    function applyTerminalAppearance() {
+      if (!term) return;
+      term.options.theme = { background: tokenHex('console'), foreground: tokenHex('text'), cursor: tokenHex('accent'), selectionBackground: tokenHex('border') };
+      const cf = Number(appearanceState.consoleSize);
+      term.options.fontSize = cf >= 8 && cf <= 32 ? cf : 13;
+      try { termFitAddon && termFitAddon.fit(); } catch (err) {}
+    }
+    function toggleAppearance(open) {
+      const panel = document.getElementById('appearancePanel');
+      const show = open === undefined ? panel.classList.contains('hidden') : open;
+      panel.classList.toggle('hidden', !show);
+      document.getElementById('appearanceBtn').setAttribute('aria-expanded', String(show));
+      document.getElementById('appearanceBtn').classList.toggle('active', show);
+      if (show) syncAppearanceUi();
+    }
+    window.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || document.getElementById('appearancePanel').classList.contains('hidden')) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      toggleAppearance(false);
+      document.getElementById('appearanceBtn').focus();
+    }, true);
   </script>
 </body>
 </html>
