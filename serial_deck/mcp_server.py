@@ -32,13 +32,15 @@ from pydantic import BaseModel, ConfigDict, Field
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from agent import (
-        BUTTON_ACTIONS, BUTTONS, POLICIES, QUERY_KINDS, AgentError, DeckAgent)
+        BUTTON_ACTIONS, BUTTONS, POLICIES, QUERY_KINDS, AgentError, DeckAgent, select_records)
+    from logcache import CachedRecords, shared_cache
     from web import ElfSymbolizer
     from hub_client import DEFAULT_SOCKET
     import profiles as profiles_module
 else:
     from .agent import (
-        BUTTON_ACTIONS, BUTTONS, POLICIES, QUERY_KINDS, AgentError, DeckAgent)
+        BUTTON_ACTIONS, BUTTONS, POLICIES, QUERY_KINDS, AgentError, DeckAgent, select_records)
+    from .logcache import CachedRecords, shared_cache
     from .web import ElfSymbolizer
     from .hub_client import DEFAULT_SOCKET
     from . import profiles as profiles_module
@@ -53,7 +55,8 @@ through the user's shared serial-deck UART hub. Typical flow:
 2. serial_connect(port) -> firmware implementing the control protocol answers
    HELLO in mode='control'; other consoles use mode='raw' (logs only).
 3. serial_logs / serial_wait_for / serial_query to observe; records exist only from
-   the moment this server attached.
+   the moment this server attached. serial_log_archives lists saved sessions; pass
+   their stream as serial_logs(archive=...) to read earlier sessions.
 4. Buttons, reset, bootloader and flash require the matching server policy
    and the user's explicit approval for that exact action.
 Never re-send a command whose outcome is 'unknown'; inspect state first.
@@ -247,10 +250,18 @@ def build_server(agent: DeckAgent, tool_prefix: str = "serial") -> MCPServer:
         is 'unknown' on timeout; do not assume failure."""
         return await run_cancellable(agent.query, kind, port, timeout_s, redact_identity)
 
+    @tool("observe", title="List saved log sessions", read_only=True, idempotent=True)
+    async def serial_log_archives() -> dict[str, Any]:
+        """List disk-cached sessions, including earlier processes (up to 48 h or quota).
+        Disk quota is shared across MCP/Web/Raw captures; duplicate captures consume space."""
+        cache = shared_cache()
+        archives = await run(cache.archives)
+        return {"archives": archives, "cache": cache.status()}
+
     @tool("observe", title="Read logs", read_only=True, idempotent=True)
     async def serial_logs(
         port: Port = None,
-        cursor: Annotated[int | None, Field(ge=1, description=
+        cursor: Annotated[int | None, Field(ge=1, le=2**63 - 1, description=
                                             "Return records with seq >= cursor (use next_cursor to page); "
                                             "omit for the most recent records")] = None,
         limit: Annotated[int, Field(ge=1, le=500)] = 200,
@@ -260,9 +271,18 @@ def build_server(agent: DeckAgent, tool_prefix: str = "serial") -> MCPServer:
         levels: Annotated[list[Literal["error", "warning", "info", "debug", "verbose", "plain",
                                        "note", "frame"]] | None, Field()] = None,
         frames: Annotated[bool, Field(description="Include decoded control-plane frames")] = False,
+        archive: Annotated[str | None, Field(pattern="^[0-9a-f]{32}$", description=
+            "Saved stream from serial_log_archives; omit to read the attached session")] = None,
     ) -> dict[str, Any]:
-        """Console log records captured since this server attached (bounded ring, secrets redacted).
-        `dropped` > 0 means the ring overflowed past your cursor."""
+        """Read RAM/disk log records; paginate with next_cursor. Secrets are redacted.
+        `dropped` > 0 means age/quota eviction passed your cursor. `archive` works without attaching."""
+        if archive is not None:
+            records = CachedRecords("archive", stream=archive)
+            last = next(records.iter_records(reverse=True, limit=1), None)
+            result = await run(select_records, records, last["seq"] + 1 if last else 1,
+                               cursor, limit, contains, levels, frames, ignore_case)
+            result["cache"] = {"stream": archive, **records.cache.status()}
+            return result
         session = agent.session(port)
         return await run(session.select, cursor, limit, contains, levels, frames, ignore_case)
 
@@ -272,7 +292,7 @@ def build_server(agent: DeckAgent, tool_prefix: str = "serial") -> MCPServer:
                                            "Substrings to wait for, e.g. ['APP_READY', 'Guru Meditation']")],
         port: Port = None,
         timeout_s: Annotated[float, Field(gt=0, le=120)] = 30.0,
-        since: Annotated[int | None, Field(ge=1, description=
+        since: Annotated[int | None, Field(ge=1, le=2**63 - 1, description=
                                            "Search from this cursor; omit to wait for new lines only")] = None,
         ignore_case: bool = False,
         context: Annotated[int, Field(ge=0, le=50)] = 5,

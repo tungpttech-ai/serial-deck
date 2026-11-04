@@ -26,6 +26,7 @@ try:
     from . import flash_snapshot as snapshots
     from . import mcp_status as mcp_status
     from . import ssh_socket
+    from .logcache import CachedRecords
     from .hub_client import (
         DEFAULT_SOCKET, MULTIPORT_PROTOCOL, BaudConflictError, HubProcessManager, port_identity)
     from .uart_client import (
@@ -36,6 +37,7 @@ except ImportError:
     import flash_snapshot as snapshots
     import mcp_status as mcp_status
     import ssh_socket
+    from logcache import CachedRecords
     from hub_client import (
         DEFAULT_SOCKET, MULTIPORT_PROTOCOL, BaudConflictError, HubProcessManager, port_identity)
     from uart_client import (
@@ -50,7 +52,6 @@ BUTTONS = ("HOME", "LEFT", "RIGHT", "ENTER", "ONOFF")
 BUTTON_ACTIONS = ("click", "press", "release", "long_press")
 WIRE_BUTTON_ACTIONS = ("press", "release", "long_press")
 QUERY_KINDS = ("capabilities", "identity", "fsm", "snapshot")
-RING_RECORDS = 5000
 LINE_CHARS = 2000
 RESPONSE_RECORDS = 500
 RESPONSE_BYTES = 48 * 1024
@@ -295,7 +296,7 @@ class Session:
         self.transport = transport_factory(manager.endpoint, manager.baud, 0.1)
         self.reader = UartReader(self.transport, frames=mode == "control")
         self.lock = threading.Lock()
-        self.records: deque[dict[str, Any]] = deque(maxlen=RING_RECORDS)
+        self.records = CachedRecords(f"MCP {port}")
         self.next_seq = 1
         self.changed = threading.Condition(self.lock)
         self.waiters: list[Waiter] = []
@@ -326,7 +327,7 @@ class Session:
                 record["frame"] = frame
             else:
                 record["text"] = _clip(text)
-            self.records.append(record)
+            self.records.append(redact_value(record))
             self.changed.notify_all()
             return seq
 
@@ -471,51 +472,12 @@ class Session:
 
     def select(self, cursor: int | None, limit: int, contains: list[str] | None,
                levels: list[str] | None, frames: bool, ignore_case: bool) -> dict[str, Any]:
-        limit = max(1, min(RESPONSE_RECORDS, limit))
-        needles = [n.lower() if ignore_case else n for n in (contains or []) if n]
         with self.lock:
-            records = list(self.records)
             end = self.next_seq
-        first = records[0]["seq"] if records else end
-        dropped = 0
-        if cursor is None:
-            candidates = records
-        else:
-            if cursor < first:
-                dropped = first - cursor
-            candidates = [r for r in records if r["seq"] >= cursor]
-
-        def keep(record: dict[str, Any]) -> bool:
-            if record["kind"] == "frame" and not frames:
-                return False
-            if levels and record["level"] not in levels:
-                return False
-            if needles:
-                haystack = record.get("text") or json.dumps(record.get("frame"), ensure_ascii=False)
-                haystack = haystack.lower() if ignore_case else haystack
-                return any(needle in haystack for needle in needles)
-            return True
-
-        matched = [r for r in candidates if keep(r)]
-        if cursor is None:
-            matched = matched[-limit:]  # Without a cursor, return the most recent records.
-            next_cursor = end
-            truncated = False
-        else:
-            truncated = len(matched) > limit
-            matched = matched[:limit]
-            next_cursor = matched[-1]["seq"] + 1 if truncated else end
-        out, size = [], 0
-        for record in matched:
-            record = redact_value(record)
-            size += len(json.dumps(record, ensure_ascii=False))
-            if out and size > RESPONSE_BYTES:
-                truncated = True
-                next_cursor = record["seq"]
-                break
-            out.append(record)
-        return {"records": out, "next_cursor": next_cursor, "truncated": truncated,
-                "dropped": dropped, "oldest_seq": first}
+        result = select_records(self.records, end, cursor, limit, contains, levels, frames, ignore_case)
+        if isinstance(self.records, CachedRecords):
+            result["cache"] = {"stream": self.records.stream, **self.records.cache.status()}
+        return result
 
     def wait_for(self, any_of: list[str], timeout: float, since: int | None,
                  ignore_case: bool, context: int,
@@ -526,31 +488,82 @@ class Session:
         folded = [n.lower() for n in needles] if ignore_case else needles
         deadline = time.monotonic() + max(0.0, min(MAX_WAIT_S, timeout))
         cursor = self.cursor if since is None else since
-        with self.changed:
-            while True:
-                first = self.records[0]["seq"] if self.records else self.next_seq
-                for index in range(max(0, cursor - first), len(self.records)):
-                    record = self.records[index]
-                    if record["kind"] == "frame":
-                        continue
-                    text = record.get("text", "")
-                    haystack = text.lower() if ignore_case else text
-                    hit = next((n for n, f in zip(needles, folded) if f in haystack), None)
-                    if hit is not None:
-                        before = list(self.records)[max(0, index - context):index]
-                        return {"matched": True, "pattern": hit, "record": redact_value(record),
-                                "context": redact_value(before), "next_cursor": record["seq"] + 1}
-                cursor = self.next_seq  # Everything up to here was scanned; only look at new records.
+        while True:
+            end = self.cursor
+            for record in record_rows(self.records, cursor=cursor, before=end):
+                if record["kind"] == "frame":
+                    continue
+                text = record.get("text", "")
+                haystack = text.lower() if ignore_case else text
+                hit = next((n for n, f in zip(needles, folded) if f in haystack), None)
+                if hit is not None:
+                    before = list(record_rows(self.records, reverse=True, limit=context, before=record["seq"]))
+                    return {"matched": True, "pattern": hit, "record": redact_value(record),
+                            "context": redact_value(list(reversed(before))), "next_cursor": record["seq"] + 1}
+            cursor = end
+            with self.changed:
                 if self.lost:
                     raise AgentError("transport_unavailable", f"{self.port}: {self.lost}")
                 remaining = deadline - time.monotonic()
                 if cancelled is not None and cancelled():
                     return {"matched": False, "reason": "cancelled", "next_cursor": self.next_seq}
                 if remaining <= 0:
-                    tail = redact_value(list(self.records)[-max(1, context):])
-                    return {"matched": False, "reason": "timeout", "tail": tail,
+                    tail = list(reversed(list(record_rows(self.records, reverse=True, limit=max(1, context)))))
+                    return {"matched": False, "reason": "timeout", "tail": redact_value(tail),
                             "next_cursor": self.next_seq}
-                self.changed.wait(min(remaining, 0.5))
+                if self.next_seq == end:
+                    self.changed.wait(min(remaining, 0.5))
+
+
+def record_rows(records, cursor=0, reverse=False, limit=None, before=None):
+    if isinstance(records, CachedRecords):
+        yield from records.iter_records(cursor, reverse, limit, before)
+        return
+    rows = reversed(records) if reverse else iter(records)
+    count = 0
+    for record in rows:
+        if record["seq"] >= cursor and (before is None or record["seq"] < before):
+            if limit is not None and count >= limit:
+                break
+            yield record
+            count += 1
+
+
+def select_records(records, end, cursor, limit, contains, levels, frames, ignore_case):
+    """Read bounded pages from RAM or disk without copying the entire archive."""
+    limit = max(1, min(RESPONSE_RECORDS, limit))
+    needles = [n.lower() if ignore_case else n for n in (contains or []) if n]
+    first_row = next(record_rows(records, limit=1, before=end), None)
+    first = first_row["seq"] if first_row else end
+    matched = []
+    for record in record_rows(records, cursor=cursor or 0, reverse=cursor is None, before=end):
+        kind = record.get("kind", record.get("type"))
+        if kind == "raw" or (kind == "frame" and not frames):
+            continue
+        if levels and record.get("level", "plain") not in levels:
+            continue
+        if needles:
+            text = record.get("text") or json.dumps(record.get("frame"), ensure_ascii=False)
+            if not any(n in (text.lower() if ignore_case else text) for n in needles):
+                continue
+        matched.append(record)
+        if len(matched) > limit:
+            break
+    truncated = cursor is not None and len(matched) > limit
+    matched = matched[:limit]
+    if cursor is None:
+        matched.reverse()
+    next_cursor = matched[-1]["seq"] + 1 if truncated else end
+    out, size = [], 0
+    for record in matched:
+        record = redact_value(record)
+        size += len(json.dumps(record, ensure_ascii=False))
+        if out and size > RESPONSE_BYTES:
+            truncated, next_cursor = True, record["seq"]
+            break
+        out.append(record)
+    return {"records": out, "next_cursor": next_cursor, "truncated": truncated,
+            "dropped": max(0, first - cursor) if cursor is not None else 0, "oldest_seq": first}
 
 
 @dataclass

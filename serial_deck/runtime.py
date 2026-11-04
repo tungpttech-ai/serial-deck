@@ -164,6 +164,9 @@ def host_exec(args: list[str]) -> int:
     here cannot race anything else.
     """
     import subprocess
+    detached = bool(args and args[0] == "--detach")
+    if detached:
+        args = args[1:]
     if args and args[0] == "--":
         args = args[1:]
     if not args:
@@ -173,11 +176,18 @@ def host_exec(args: list[str]) -> int:
     if os.name == "nt":
         import ctypes
         ctypes.WinDLL("kernel32").SetDllDirectoryW(None)
-        try:
-            job = _kill_children_with_me()
-        except Exception as exc:  # cleanup on timeout is best effort; never block the launch
-            print(f"host-exec: no job object ({exc})", file=sys.stderr)
+        if not detached:
+            try:
+                job = _kill_children_with_me()
+            except Exception as exc:  # cleanup on timeout is best effort; never block the launch
+                print(f"host-exec: no job object ({exc})", file=sys.stderr)
     try:
+        if detached:
+            flags = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+            child = subprocess.Popen(args, env=host_env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, **flags)
+            print(child.pid, flush=True)
+            return 0
         code = subprocess.call(args, env=host_env())
     except OSError as exc:
         print(f"host-exec: cannot start {args[0]}: {exc}", file=sys.stderr)

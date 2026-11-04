@@ -278,7 +278,8 @@ class ConsoleUxTest(unittest.TestCase):
         self.assertIn('id="jumpLatest"', HTML_PAGE)  # obvious way back after scrolling up
 
     def test_log_rendering_is_bounded(self):
-        self.assertIn("const BUFFER_MAX = 20000;", HTML_PAGE)
+        self.assertIn("function connectionCacheBytes(conn)", HTML_PAGE)
+        self.assertIn("conn.logBytes", HTML_PAGE)
         self.assertIn("const DOM_MAX = 3000;", HTML_PAGE)
         self.assertIn("requestAnimationFrame(flushRows)", HTML_PAGE)
 

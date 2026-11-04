@@ -34,6 +34,8 @@ try:
     from . import profiles
     from .autoconnect import RuleWatcher, Settings, SettingsError
     from .deckconfig import JsonFile
+    from .logcache import CachedRecords, shared_cache
+    from .updater import Updater, RELEASE_URL
     from .hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from .uart_client import (
@@ -64,6 +66,8 @@ except ImportError:
     import profiles
     from autoconnect import RuleWatcher, Settings, SettingsError
     from deckconfig import JsonFile
+    from logcache import CachedRecords, shared_cache
+    from updater import Updater, RELEASE_URL
     from hub_client import (
         DEFAULT_SOCKET, BaudConflictError, HubProcessManager, HubRegistry, find_existing_hub)
     from uart_client import (
@@ -304,8 +308,8 @@ class DeckWebBridge:
         self.fsm_state = "UNKNOWN"
         self.device_info = "Not connected"
         self.telemetry: dict[str, Any] = {}
-        self.history_logs: list[dict[str, Any]] = []
-        self.max_history = 2000
+        self.history_logs = CachedRecords(f"Web {default_port or 'unconnected'}")
+        self.raw_records = CachedRecords(f"Raw {default_port or 'unconnected'}")
         self.sse_clients: set[queue.Queue[dict[str, Any]]] = set()
         self.sse_lock = threading.Lock()
         self.flashing = False
@@ -349,10 +353,10 @@ class DeckWebBridge:
             event["time"] = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
         if event.get("type") == "log":
+            event.setdefault("created_at", time.time())
             with self.lock:
                 self.history_logs.append(event)
-                if len(self.history_logs) > self.max_history:
-                    self.history_logs.pop(0)
+
 
         with self.sse_lock:
             dead = []
@@ -367,6 +371,7 @@ class DeckWebBridge:
     def get_status(self) -> dict[str, Any]:
         with self.lock:
             return {
+                "log_cache": self.history_logs.cache.status(),
                 "connected": self.connected,
                 "port": self.port,
                 "baud": self.baud,
@@ -461,6 +466,9 @@ class DeckWebBridge:
                 self._release_owned_manager()
             raise RuntimeError(f"Connection failed: {exc}") from exc
         with self.lock:
+            if port != self.port:
+                self.history_logs = CachedRecords(f"Web {port}")
+                self.raw_records = CachedRecords(f"Raw {port}")
             self.port = port
             self.baud = baud
             if mode is not None:
@@ -661,8 +669,10 @@ class DeckWebBridge:
     def _broadcast_raw(self, chunk: bytes) -> None:
         with self.lock:
             self.raw_history.extend(chunk)
-            del self.raw_history[:-RAW_HISTORY_BYTES]
-        self.broadcast({"type": "raw", "data": base64.b64encode(chunk).decode("ascii")})
+            del self.raw_history[:-max(RAW_HISTORY_BYTES, min(1024 * 1024, self.history_logs.cache.ram_limit // 8))]
+        event = {"type": "raw", "data": base64.b64encode(chunk).decode("ascii")}
+        self.raw_records.append(event)
+        self.broadcast(event)
 
     def raw_history_b64(self) -> str:
         with self.lock:
@@ -1425,6 +1435,37 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             self._send_json(mcp_status.overview())
             return
 
+        if path == "/api/updates/releases":
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", RELEASE_URL)
+            self.end_headers()
+            return
+
+        if path == "/api/updates":
+            self._send_json({"ok": True, **self.updater.status()})
+            return
+
+        if path == "/api/cache":
+            cache = shared_cache()
+            archives = cache.archives()
+            self._send_json({"ok": True, "active": cache.status(), "archives": archives})
+            return
+
+        if path == "/api/cache/export":
+            stream = query.get("stream", [""])[0]
+            if not re.fullmatch(r"[0-9a-f]{32}", stream):
+                self._reject(HTTPStatus.BAD_REQUEST, "invalid archive stream")
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="serial-cache-{stream}.jsonl"')
+            self.end_headers()
+            rows = shared_cache().rows(stream, reverse=True, limit=1)
+            last = next(rows, None)
+            for entry in shared_cache().rows(stream, before=last["seq"] + 1 if last else 1):
+                self.wfile.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+            return
+
         if path == "/api/settings":
             self._send_json({"ok": True, "settings": self.connections.settings.get()})
             return
@@ -1461,12 +1502,12 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Disposition", 'attachment; filename="serial_console.log"')
             self.end_headers()
-            with bridge.lock:
-                for entry in bridge.history_logs:
-                    t = entry.get("time", "")
-                    lvl = entry.get("level", "plain").upper()
-                    txt = entry.get("text", "")
-                    self.wfile.write(f"[{t}] [{lvl}] {txt}\n".encode("utf-8"))
+            last = next(bridge.history_logs.iter_records(reverse=True, limit=1), None)
+            for entry in bridge.history_logs.iter_records(before=last["seq"] + 1 if last else 1):
+                t = entry.get("time", "")
+                lvl = entry.get("level", "plain").upper()
+                txt = entry.get("text", "")
+                self.wfile.write(f"[{t}] [{lvl}] {txt}\n".encode("utf-8"))
             return
 
         if path == "/api/stream":
@@ -1534,6 +1575,14 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True})
                 return
 
+            if path == "/api/updates/check":
+                if not self._action_token_ok():
+                    self._reject(HTTPStatus.FORBIDDEN, "this action needs the dashboard page")
+                    return
+                self.updater.start(force=True)
+                self._send_json({"ok": True, **self.updater.status()})
+                return
+
             if path == "/api/connections":
                 conn_id, bridge = self.connections.create()
                 self._send_json({"ok": True, "id": conn_id, "status": bridge.get_status()})
@@ -1585,7 +1634,7 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "this action needs the dashboard page"},
                                     status=HTTPStatus.FORBIDDEN)
                     return
-                changes = {key: body[key] for key in ("restore_on_start", "rules") if key in body}
+                changes = {key: body[key] for key in ("restore_on_start", "rules", "log_cache", "auto_update") if key in body}
                 try:
                     settings = self.connections.settings.update(**changes)
                 except SettingsError as exc:
@@ -1593,6 +1642,8 @@ class DeckHttpHandler(BaseHTTPRequestHandler):
                     return
                 if settings["rules"]:
                     self.connections.start_rules()
+                if "auto_update" in changes:
+                    self.updater.start(force=settings["auto_update"])
                 self._send_json({"ok": True, "settings": settings})
                 return
 
@@ -2563,8 +2614,8 @@ HTML_PAGE = """<!DOCTYPE html>
               </summary>
               <div class="pop-panel w-72 right-0 left-auto">
                 <button type="button" onclick="exportBuffer('filtered')" class="da-item"><i class="fa-solid fa-filter" aria-hidden="true"></i><span>Shown lines</span><span class="da-note">filter applied</span></button>
-                <button type="button" onclick="exportBuffer('all')" class="da-item"><i class="fa-solid fa-database" aria-hidden="true"></i><span>This window's buffer</span><span class="da-note">up to 20000</span></button>
-                <button type="button" onclick="document.getElementById('exportMenu').open=false;exportLogs()" class="da-item"><i class="fa-solid fa-server" aria-hidden="true"></i><span>Hub history</span><span class="da-note">last 2000</span></button>
+                <button type="button" onclick="exportBuffer('all')" class="da-item"><i class="fa-solid fa-database" aria-hidden="true"></i><span>This window's buffer</span><span class="da-note">recent logs</span></button>
+                <button type="button" onclick="document.getElementById('exportMenu').open=false;exportLogs()" class="da-item"><i class="fa-solid fa-server" aria-hidden="true"></i><span>Disk history</span><span class="da-note">up to 48 h</span></button>
               </div>
             </details>
             <button onclick="clearCurrentLogs()" title="Clear this view (the hub keeps its own history, which Export uses)" aria-label="Clear view" class="tb-btn tb-danger">
@@ -2769,7 +2820,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <span id="sbLines"></span>
         <span id="sbPins" class="hidden flex items-center gap-3" aria-label="Pinned metrics"></span>
         <span id="sbTotals" title="Bytes this window has received and sent on this connection since it was opened"></span>
-        <span id="sbTrim" class="hidden text-brand-warning" title="Oldest lines dropped from this window's buffer (limit 20000). The hub keeps its own history."></span>
+        <span id="sbTrim" class="hidden text-brand-warning" title="Oldest lines dropped from this window's RAM cache. Export reads disk history."></span>
         <span class="ml-auto hidden lg:inline">Click a line · Enter details · C copy line</span>
       </div>
 
@@ -2804,6 +2855,44 @@ HTML_PAGE = """<!DOCTYPE html>
           <div id="autoRulesEmpty" class="text-brand-muted">No rules yet. Select a USB port in the port list, then press "Add rule".</div>
           <div id="autoError" class="hidden text-brand-danger font-semibold mt-2"></div>
         </div>
+      </div>
+
+      <div class="glass-card p-4 space-y-3 text-xs">
+        <h3 class="font-bold text-brand-text">Updates</h3>
+        <label class="flex items-center gap-2">
+          <input id="autoUpdate" type="checkbox" onchange="saveUpdateSettings()">
+          <span>Automatically install stable updates when devices are idle</span>
+        </label>
+        <p class="text-brand-muted">Checks daily. Downloads the official release and verifies SHA-256, then closes and restarts this app to install.
+          Windows uses Setup; macOS replaces the writable app bundle; Linux uses AppImage or the OS package installer.
+          The OS may ask for installation permission. Pip updates require a virtual environment. Editable source is protected.
+          Restart MCP clients after updating. Settings and log archives stay outside the installation.</p>
+        <button onclick="checkUpdates()" class="px-3 py-1 rounded border border-brand-border">Check now</button>
+        <a href="/api/updates/releases" target="_blank" rel="noopener noreferrer" class="text-brand-accent">Release notes / manual installer</a>
+        <div id="updateStatus" role="status" class="mono break-all">Not checked yet</div>
+        <div id="updateError" role="alert" class="text-brand-danger"></div>
+      </div>
+
+      <div class="glass-card p-4 space-y-3 text-xs">
+        <h3 class="font-bold text-brand-text">Log cache</h3>
+        <p class="text-brand-muted">Keep up to 48 hours, or the disk quota, whichever fills first. Oldest records are removed first.
+          RAM holds recent records; Export reads disk history. Only connected clients capture logs.</p>
+        <label class="block">Cache directory (blank = default)
+          <input id="cacheDirectory" type="text" class="w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1 mono" placeholder="Default cache directory">
+        </label>
+        <div class="flex gap-3 flex-wrap">
+          <label>RAM (MiB)<input id="cacheRam" type="number" min="1" max="4096" value="64" class="block w-28 bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1"></label>
+          <label>Disk (MiB)<input id="cacheDisk" type="number" min="16" max="1048576" value="1024" class="block w-28 bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1"></label>
+          <button onclick="saveCacheSettings()" class="px-3 py-1 rounded border border-brand-border">Save cache settings</button>
+        </div>
+        <p class="text-brand-muted">Restart Web/App and MCP to apply changes. Old cache directories stay in place.
+          Disk quota is shared by all sessions in this directory. RAM quota covers cached records per process; runtime overhead is additional.</p>
+        <div id="cacheStatus" role="status" class="mono break-all"></div>
+        <label class="block">Saved sessions
+          <select id="cacheArchives" class="block w-full bg-brand-surfaceAlt border border-brand-border rounded px-2 py-1"></select>
+        </label>
+        <button onclick="downloadCacheArchive()" class="px-3 py-1 rounded border border-brand-border">Download saved session (JSONL)</button>
+        <div id="cacheError" role="alert" class="text-brand-danger"></div>
       </div>
 
       <div class="glass-card p-4 space-y-3 text-xs">
@@ -3024,6 +3113,12 @@ HTML_PAGE = """<!DOCTYPE html>
           termPending: [], termSending: false, seq: 0, pauseSeq: null, tags: new Map(), trimmed: 0, fsmLog: [], lastFsm: undefined, metrics: {},
           lines: 0, lastLines: 0, rate: 0, rxBytes: 0, lastRx: 0, rxBps: 0, txBytes: 0, telHist: {}, telLast: '', connecting: false, error: false };
         if (!connOrder.includes(id)) connOrder.push(id);
+        for (const other of Object.values(conns)) {
+          trimBuffer(other);
+          while (other.rawBytes > connectionCacheBytes(other) / 2 && other.rawChunks.length) {
+            other.rawBytes -= other.rawChunks.shift().length;
+          }
+        }
       }
       return conns[id];
     }
@@ -3123,11 +3218,16 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     // ---- Console log view --------------------------------------------------
-    // Every line stays in conn.logsBuffer (BUFFER_MAX per connection); only the
+    // Recent lines stay in a byte-bounded cache per window; only the
     // newest DOM_MAX matching lines are drawn, appended in one batch per frame.
     // ponytail: no windowed virtual scroll (rows have variable height). Add one
     // if DOM_MAX has to grow beyond a few thousand rows.
-    const BUFFER_MAX = 20000;
+    // Cached record estimates, shared across connections in this window.
+    // DOM/xterm/runtime overhead is outside the record budget.
+    function connectionCacheBytes(conn) {
+      const mib = (conn.status.log_cache || {}).ram_mib || 64;
+      return mib * 1024 * 1024 / Math.max(1, Object.keys(conns).length);
+    }
     const DOM_MAX = 3000;
     const IDF_RE = /^([EWIDV]) [(](\\d+)[)] ([^\\s:]+): ([\\s\\S]*)$/;
     let viewMode = (() => {
@@ -3734,6 +3834,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function adopt(conn, entry) {
       entry._n = ++conn.seq;
+      entry._cacheBytes = (entry.text || '').length * 2 + 384;
+      conn.logBytes = (conn.logBytes || 0) + entry._cacheBytes;
       const p = parsedLine(entry);
       if (p) {
         if (conn.tags.has(p.tag)) conn.tags.set(p.tag, conn.tags.get(p.tag) + 1);
@@ -3744,9 +3846,16 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function trimBuffer(conn) {
-      if (conn.logsBuffer.length <= BUFFER_MAX + 1000) return;
-      const drop = conn.logsBuffer.length - BUFFER_MAX;
-      conn.logsBuffer.splice(0, drop);
+      const budget = connectionCacheBytes(conn) / 2;
+      const cutoff = Date.now() / 1000 - 48 * 3600;
+      let drop = 0;
+      while (drop < conn.logsBuffer.length) {
+        const entry = conn.logsBuffer[drop];
+        if ((conn.logBytes || 0) <= budget && (!entry.created_at || entry.created_at >= cutoff)) break;
+        conn.logBytes -= entry._cacheBytes || 0;
+        drop++;
+      }
+      if (drop) conn.logsBuffer.splice(0, drop);
       conn.trimmed += drop;
     }
 
@@ -4572,7 +4681,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function clearCurrentLogs() {
       const conn = ensureConn(connId);
       if (activeTab === 'logs') {
-        conn.logsBuffer.length = 0;
+        conn.logsBuffer.length = 0; conn.logBytes = 0;
         conn.trimmed = 0;
         if (isPaused(conn)) conn.pauseSeq = conn.seq;
         pendingRows.logsPanePrimary = [];
@@ -4590,7 +4699,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function clearSplitLogs() {
       if (!splitConnId) return;
       const conn = ensureConn(splitConnId);
-      conn.logsBuffer.length = 0;
+      conn.logsBuffer.length = 0; conn.logBytes = 0;
       if (isPaused(conn)) conn.pauseSeq = conn.seq;
       pendingRows.logsPaneSplitContent = [];
       document.getElementById('logsPaneSplitContent').innerHTML = '';
@@ -4831,7 +4940,6 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     // ---- Console mode + interactive terminal (Linux boards / other apps) ----
-    const RAW_KEEP_BYTES = 256 * 1024;
     let term = null;
     let termFitAddon = null;
 
@@ -4886,7 +4994,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function pushRaw(conn, bytes) {
       conn.rawChunks.push(bytes);
       conn.rawBytes += bytes.length;
-      while (conn.rawBytes > RAW_KEEP_BYTES && conn.rawChunks.length > 1) {
+      while (conn.rawBytes > connectionCacheBytes(conn) / 2 && conn.rawChunks.length > 0) {
         conn.rawBytes -= conn.rawChunks.shift().length;
       }
     }
@@ -4896,7 +5004,7 @@ HTML_PAGE = """<!DOCTYPE html>
       term = new Terminal({
         cursorBlink: true,
         convertEol: false,
-        scrollback: 10000,
+        scrollback: Math.min(100000, Math.max(1000, Math.floor(connectionCacheBytes(ensureConn(connId)) / 1024))),
         fontFamily: "'JetBrains Mono', monospace",
       });
       applyTerminalAppearance();
@@ -5148,9 +5256,10 @@ HTML_PAGE = """<!DOCTYPE html>
       if (event.type === 'init') {
         conn.status = event.status || {};
         if (event.logs) {
-          conn.logsBuffer = event.logs; conn.seq = 0; conn.pauseSeq = null; conn.tags.clear(); conn.trimmed = 0; conn.fsmLog = []; conn.lastFsm = undefined;
+          conn.logsBuffer = event.logs; conn.logBytes = 0; conn.seq = 0; conn.pauseSeq = null; conn.tags.clear(); conn.trimmed = 0; conn.fsmLog = []; conn.lastFsm = undefined;
           resetMetrics(conn);
           conn.logsBuffer.forEach(e => adopt(conn, e));
+          trimBuffer(conn);
           tagsDirty = true;
         }
         conn.rawChunks = []; conn.rawBytes = 0;
@@ -5973,6 +6082,87 @@ HTML_PAGE = """<!DOCTYPE html>
         if (data.ok) autoSettings = data.settings;
       } catch (err) { return; }
       renderAutoSettings();
+      const cache = autoSettings.log_cache || {directory: '', ram_mib: 64, disk_mib: 1024};
+      document.getElementById('cacheDirectory').value = cache.directory;
+      document.getElementById('cacheRam').value = cache.ram_mib;
+      document.getElementById('cacheDisk').value = cache.disk_mib;
+      await loadCacheStatus();
+      await loadUpdateStatus();
+    }
+
+    let updateTimer = null;
+    async function loadUpdateStatus() {
+      clearTimeout(updateTimer);
+      try {
+        const res = await fetch('/api/updates');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Could not read update status');
+        document.getElementById('autoUpdate').checked = !!data.enabled;
+        document.getElementById('updateStatus').textContent = `Installed ${data.installed} · ${data.kind}${data.latest ? ' · Latest ' + data.latest : ''} · ${data.state || 'not checked'}: ${data.message || ''}`;
+        document.getElementById('updateError').textContent = data.state === 'error' ? data.message : '';
+      } catch (err) { document.getElementById('updateError').textContent = String(err); }
+      if (currentPage === 'auto') updateTimer = setTimeout(loadUpdateStatus, 3000);
+    }
+
+    async function saveUpdateSettings() {
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN},
+          body: JSON.stringify({auto_update: document.getElementById('autoUpdate').checked})
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Could not save update settings');
+        await loadUpdateStatus();
+      } catch (err) { document.getElementById('updateError').textContent = String(err); }
+    }
+
+    async function checkUpdates() {
+      try {
+        const res = await fetch('/api/updates/check', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN}, body: '{}'
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Could not check updates');
+        await loadUpdateStatus();
+      } catch (err) { document.getElementById('updateError').textContent = String(err); }
+    }
+
+    async function loadCacheStatus() {
+      try {
+        const res = await fetch('/api/cache');
+        const data = await res.json();
+        document.getElementById('cacheStatus').textContent = `Active: ${data.active.directory} · ${data.active.ram_mib} MiB RAM · ${data.active.disk_mib} MiB disk`;
+        document.getElementById('cacheError').textContent = data.active.error || '';
+        document.getElementById('cacheArchives').replaceChildren(...data.archives.map(a =>
+          new Option(`${a.label} · ${new Date(a.first * 1000).toLocaleString()} · ${a.records.toLocaleString()} records`, a.stream)));
+      } catch (err) { document.getElementById('cacheError').textContent = String(err); }
+    }
+
+    async function saveCacheSettings() {
+      const error = document.getElementById('cacheError');
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Deck-Action': DECK_ACTION_TOKEN},
+          body: JSON.stringify({log_cache: {
+            directory: document.getElementById('cacheDirectory').value,
+            ram_mib: Number(document.getElementById('cacheRam').value),
+            disk_mib: Number(document.getElementById('cacheDisk').value)}})
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Could not save');
+        autoSettings = data.settings;
+        error.textContent = '';
+        document.getElementById('cacheStatus').textContent = 'Saved. Restart Web/App and MCP to apply. Previous archive files stay in their original directory.';
+      } catch (err) { error.textContent = String(err); }
+    }
+
+    function downloadCacheArchive() {
+      const stream = document.getElementById('cacheArchives').value;
+      if (!stream) return;
+      const link = document.createElement('a');
+      link.href = '/api/cache/export?stream=' + encodeURIComponent(stream);
+      link.download = 'serial-cache-' + stream + '.jsonl';
+      document.body.appendChild(link); link.click(); link.remove();
     }
 
     function renderAutoSettings() {
@@ -6620,6 +6810,27 @@ class WebBackend:
         self.connections = ConnectionManager(bridge, self.hub_registry, baud, elf, mode)
         self.connections.lifecycle_hubs.append(self.hub_manager)
         self.handler.connections = self.connections
+        self.updater = Updater(self.connections.settings, self.update_blocker, self.prepare_update,
+                               lambda: self.server.shutdown())
+        self.handler.updater = self.updater
+
+    def update_blocker(self):
+        if any(s.get("connected") or s.get("reconnecting") for s in self.connections.list_status()):
+            return "Waiting for device connections to close"
+        try:
+            status = self.hub_manager.request_control("status", timeout=1)
+            if type(status.get("client_count")) is not int or not isinstance(status.get("flash"), dict):
+                return "Waiting for a valid hub status"
+            if status["client_count"] or status["flash"].get("active") is not False:
+                return "Waiting for hub clients and firmware flashes to finish"
+        except (OSError, RuntimeError, ValueError):
+            return "Waiting for the hub to answer"
+        return None
+
+    def prepare_update(self):
+        if self.connections.watcher is not None:
+            self.connections.watcher.close()
+        self.hub_manager.shutdown()
 
     @property
     def port(self) -> int:
@@ -6631,6 +6842,7 @@ class WebBackend:
         return f"http://{host}:{self.port}/"
 
     def serve_forever(self) -> None:
+        self.updater.start()
         threading.Thread(target=self._start_autoconnect, name="serial-deck-autoconnect",
                          daemon=True).start()
         self.server.serve_forever(poll_interval=0.2)
@@ -6663,6 +6875,7 @@ class WebBackend:
         if self._closed:
             return
         self._closed = True
+        self.updater.close()
         if self._serve_thread is not None:
             self.server.shutdown()
             self._serve_thread.join(timeout=2.0)
