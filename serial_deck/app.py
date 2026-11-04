@@ -388,6 +388,8 @@ def run_browser(args: argparse.Namespace, backend: Any,
     """Serve the dashboard to the default browser until Quit or every tab is gone."""
     controller = AppController(backend)
     lifecycle = BrowserLifecycle(controller.close_blocker)
+    if hasattr(backend, "updater"):
+        backend.updater.restart = lambda: lifecycle.quit_requested.set()
     backend.handler.lifecycle = lifecycle
     stop = threading.Event()
     previous = {}
@@ -474,6 +476,8 @@ def run_app(args: argparse.Namespace,
         return 2
 
     controller = AppController(backend)
+    if hasattr(backend, "updater"):
+        backend.updater.restart = controller.request_shutdown
     previous_signals: dict[int, Any] = {}
     try:
         backend.start_in_thread()

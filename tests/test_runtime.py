@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import serial_deck
@@ -95,6 +96,19 @@ class HostExecTest(unittest.TestCase):
         argv = popen.call_args.args[0]
         self.assertEqual(argv[:3], [r"C:\App\serial-deck-cli.exe", "host-exec", "--"])
         self.assertEqual(argv[3:], ["addr2line", "-e", "app.elf"])
+
+    def test_detached_host_exec_returns_pid_without_waiting_or_kill_job(self):
+        import subprocess
+        out = io.StringIO()
+        with patch("subprocess.Popen", return_value=SimpleNamespace(pid=4321)) as spawn, \
+                patch.object(runtime, "_kill_children_with_me") as kill_job, redirect_stdout(out):
+            code = runtime.host_exec(["--detach", "--", "native-installer-helper"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().strip(), "4321")
+        self.assertEqual(spawn.call_args.args[0], ["native-installer-helper"])
+        self.assertEqual(spawn.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(spawn.call_args.kwargs["stderr"], subprocess.DEVNULL)
+        kill_job.assert_not_called()
 
     def test_host_exec_runs_the_program_and_relays_its_exit_code(self):
         code = runtime.host_exec(["--", sys.executable, "-c", "raise SystemExit(7)"])

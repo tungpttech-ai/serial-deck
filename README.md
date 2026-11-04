@@ -99,6 +99,79 @@ serial-deck --port /dev/ttyUSB0 --baud 115200 monitor
 
 Every command also runs as a module, for example `python -m serial_deck.web`.
 
+## Auto update (Windows, macOS, Linux)
+
+**Automation → Updates → Automatically install stable updates when devices are idle**
+enables daily checks while Web/App is running. **Check now** works even when
+automatic installation is off. The setting is `"auto_update": true` in
+`settings.json`; it is off by default on new installations.
+
+Updates come only from this repository's latest stable GitHub release. The updater
+validates the version and asset URL, verifies SHA-256 from GitHub or the release's
+`SHA256SUMS.txt`, and stages the package before changing anything. Local editable
+checkouts and system Python installs are protected from automatic replacement.
+
+| Installation | Automatic installation |
+|---|---|
+| Windows Setup | Waits for this app to exit, runs Setup silently in the same install directory, then relaunches. The helper runs outside the installed bundle so it does not lock app files. |
+| macOS app | Waits for exit, mounts the DMG read-only, copies and verifies the signed app, keeps the old bundle as a versioned hidden backup, then relaunches. The app's parent folder must be writable; otherwise use the manual installer link. |
+| Linux AppImage | Verifies a staging copy on the same filesystem, waits for exit, atomically replaces the AppImage, and relaunches. Its directory must be writable. |
+| Linux .deb | Waits for exit, uses the OS authentication prompt, copies the package into root-owned staging, verifies SHA-256 again, and runs `apt-get install --yes --no-remove`, then relaunches. Other running installed processes cause the existing package guards to refuse the update. |
+| pip in a venv | Waits for exit, upgrades the verified wheel with the app/MCP extras, and relaunches the current command. |
+
+Connected/reconnecting devices, other hub clients, firmware flashing, or an
+unanswered hub postpone installation. The idle hub must acknowledge shutdown
+before the installer is handed off. Restart MCP clients after updating; the
+updater never kills them. Settings, device profiles, and log archives stay outside
+the app installation. CLI/MCP alone do not run the update scheduler.
+
+The status card shows progress, deferrals, and errors. A failed installer relaunches
+the old app when it is still available, and reports its result on the next start.
+Updater downloads and `install.log` live in the OS cache directory under
+`serial-deck/updates/vX.Y.Z`; they are separate from the log-cache quota. macOS
+keeps `.SerialDeck-previous-X.Y.Z.app` next to the app for recovery. Current
+installers must include this updater before they can update themselves; build and
+publish a new release to distribute it to existing Windows/macOS/Linux users.
+
+## Log cache (Web/App and MCP)
+
+**Automation → Log cache** sets the cache directory and RAM/disk budgets. Defaults:
+
+- **64 MiB RAM** for serialized hot records per process. Python/SQLite, browser,
+  DOM and terminal overhead are additional; this is not a process RSS limit.
+- **1 GiB disk**, shared by all saved streams in this cache directory. SQLite
+  metadata and reserved WAL space count against the budget, reducing usable payload.
+- **48 hours** maximum age. The oldest records are removed when either age or
+  disk quota is reached; a full 48 hours is not guaranteed at high log rates.
+- Default directory: `$XDG_CACHE_HOME/serial-deck/logs`, or
+  `~/.cache/serial-deck/logs` when `XDG_CACHE_HOME` is unset.
+
+Save changes and restart Web/App and MCP. An old directory is not moved or deleted
+when changing the path. Settings are stored in `settings.json` in the config directory:
+
+```json
+"log_cache": {"directory": "", "ram_mib": 64, "disk_mib": 1024}
+```
+
+RAM eviction does not remove disk history. **Export → Disk history** streams the
+current connection's log archive. **Automation → Log cache → Saved sessions**
+downloads earlier sessions as JSONL after a restart; raw terminal sessions retain
+base64 byte chunks. MCP uses `serial_log_archives`, then
+`serial_logs(archive="<stream>", cursor=1)` and `next_cursor` to page through a
+saved session without attaching to a device. MCP output is redacted; raw byte
+archives are downloaded through the dashboard only.
+
+Only connected Web/App or MCP sessions capture logs; the idle hub alone does not
+archive. Each capture is separate, so concurrent MCP/Web captures and raw/decoded
+copies consume the shared disk budget. Cache errors appear in settings and MCP
+results. Recent records stay in RAM during disk errors and are retried on the next
+write; `lost_records` reports records evicted from RAM before they could be archived.
+The Tk desktop and CLI monitor do not use this archive.
+
+For scale: 100 lines/s × 500 bytes × 48 h needs **8.05 GiB of text alone**.
+Allow additional space for metadata and duplicate captures; 1 GiB is a bounded
+cache, not a promise of 48-hour storage.
+
 ## Sharing ports, and changing baud
 
 All clients share **one hub daemon per user**. It starts on first use and

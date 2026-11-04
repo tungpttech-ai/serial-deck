@@ -15,9 +15,11 @@ from typing import Any, Callable
 
 try:
     from .deckconfig import JsonFile
+    from .logcache import clean_settings as clean_cache_settings
     from .uart_client import usb_matches
 except ImportError:
     from deckconfig import JsonFile
+    from logcache import clean_settings as clean_cache_settings
     from uart_client import usb_matches
 
 DEFAULTS: dict[str, Any] = {"restore_on_start": False, "last_ports": [], "rules": []}
@@ -81,9 +83,13 @@ class Settings:
             except SettingsError:
                 continue  # a hand-edited bad rule never stops the app
         ports = data.get("last_ports", [])
+        try:
+            cache = clean_cache_settings(data.get("log_cache", {}))
+        except ValueError:
+            cache = clean_cache_settings({})
         return {"restore_on_start": bool(data.get("restore_on_start", False)),
                 "last_ports": [p for p in ports if isinstance(p, dict)][:8] if isinstance(ports, list) else [],
-                "rules": rules[:MAX_RULES]}
+                "rules": rules[:MAX_RULES], "log_cache": cache, "auto_update": data.get("auto_update") is True}
 
     def update(self, **changes: Any) -> dict[str, Any]:
         with self.store.lock:
@@ -97,6 +103,15 @@ class Settings:
                 data["rules"] = [clean_rule(r) for r in rules]
             if "last_ports" in changes:
                 data["last_ports"] = changes["last_ports"][:8]
+            if "log_cache" in changes:
+                try:
+                    data["log_cache"] = clean_cache_settings(changes["log_cache"])
+                except ValueError as exc:
+                    raise SettingsError(str(exc)) from exc
+            if "auto_update" in changes:
+                if type(changes["auto_update"]) is not bool:
+                    raise SettingsError("auto_update must be true or false")
+                data["auto_update"] = changes["auto_update"]
             self.store.save(data)
             return data
 

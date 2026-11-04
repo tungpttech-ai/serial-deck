@@ -17,6 +17,54 @@ from serial_deck.web import (
 
 
 class DeckWebTest(unittest.TestCase):
+    def test_hello_failure_logs_without_holding_bridge_lock(self):
+        bridge = DeckWebBridge(default_mode="control")
+        bridge.connected = True
+        bridge.transport = MagicMock()
+        broadcast = bridge.broadcast
+
+        def log(event):
+            acquired = bridge.lock.acquire(blocking=False)
+            self.assertTrue(acquired, "HELLO failure must release lock before logging")
+            bridge.lock.release()
+            broadcast(event)
+
+        with patch("serial_deck.web.send_hello", side_effect=OSError("write failed")), \
+                patch.object(bridge, "broadcast", side_effect=log):
+            bridge._send_hello()
+        self.assertIn("write failed", bridge.history_logs[-1]["text"])
+        self.assertTrue(bridge.get_status()["connected"])
+
+    def test_registry_connect_to_new_port_starts_new_archives(self):
+        bridge = DeckWebBridge(default_port="/dev/old", default_mode="control")
+        old_logs, old_raw = bridge.history_logs, bridge.raw_records
+        bridge.hub_registry = MagicMock()
+        bridge.hub_registry.acquire.return_value = MagicMock(baud=115200)
+        with patch("serial_deck.web.open_uart_transport", return_value=MagicMock()), \
+                patch("serial_deck.web.UartReader"), patch("threading.Thread"), \
+                patch.object(bridge, "_remember_device"), patch.object(bridge, "_session_changed"), \
+                patch.object(bridge, "_send_hello"):
+            bridge._connect("/dev/new", 115200)
+        self.assertIsNot(bridge.history_logs, old_logs)
+        self.assertIsNot(bridge.raw_records, old_raw)
+        self.assertEqual(bridge.history_logs.label, "Web /dev/new")
+
+    def test_failed_switch_then_retry_still_starts_new_archives(self):
+        bridge = DeckWebBridge(default_port="/dev/old", default_mode="control")
+        old_logs = bridge.history_logs
+        bridge.hub_registry = MagicMock()
+        bridge.hub_registry.acquire.return_value = MagicMock(baud=115200)
+        with patch("serial_deck.web.open_uart_transport", side_effect=OSError("busy")):
+            with self.assertRaises(RuntimeError):
+                bridge._connect("/dev/new", 115200)
+        with patch("serial_deck.web.open_uart_transport", return_value=MagicMock()), \
+                patch("serial_deck.web.UartReader"), patch("threading.Thread"), \
+                patch.object(bridge, "_remember_device"), patch.object(bridge, "_session_changed"), \
+                patch.object(bridge, "_send_hello"):
+            bridge._connect("/dev/new", 115200)
+        self.assertIsNot(bridge.history_logs, old_logs)
+        self.assertEqual(bridge.history_logs.label, "Web /dev/new")
+
     def test_log_level_parsing(self):
         self.assertEqual(parse_log_level("E (123) panic: failed"), "error")
         self.assertEqual(parse_log_level("W (123) wifi: retry"), "warning")
@@ -260,7 +308,8 @@ class ConsoleUxTest(unittest.TestCase):
         self.assertIn('id="jumpLatest"', HTML_PAGE)  # obvious way back after scrolling up
 
     def test_log_rendering_is_bounded(self):
-        self.assertIn("const BUFFER_MAX = 20000;", HTML_PAGE)
+        self.assertIn("function connectionCacheBytes(conn)", HTML_PAGE)
+        self.assertIn("conn.logBytes", HTML_PAGE)
         self.assertIn("const DOM_MAX = 3000;", HTML_PAGE)
         self.assertIn("requestAnimationFrame(flushRows)", HTML_PAGE)
 

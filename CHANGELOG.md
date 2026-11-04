@@ -5,6 +5,11 @@
 - Web/App appearance: palette button on the left rail picks Dark / Light / High contrast, overrides 11 colors with a color picker, and sets UI text size (12-24 px) and console/terminal font size (8-32 px). Saved per browser; Reset restores defaults.
 
 - Dashboard: ship prebuilt Tailwind CSS (`serial_deck/web_assets/tailwind.css`, rebuild with `tools/build_css.sh`) instead of the in-browser Play CDN, which recompiled styles on every DOM change. At 300 log lines/s the page main thread drops from ~95% busy to ~11-24%; the look is unchanged.
+
+- Auto update: opt-in daily stable-release checks, official asset/SHA-256 validation, idle-device and atomic hub-shutdown guards, and restart/install handoff for Windows Setup, signed macOS app bundles, Linux AppImage/.deb, and pip venvs. Automation → Updates exposes settings/status/check-now; editable source is protected.
+
+- Web/App and MCP: configurable log cache (64 MiB RAM per process, 1 GiB shared disk, up to 48 h). Disk-backed pagination/export and saved-session downloads survive restarts. Configure directory and budgets under Automation → Log cache; restart clients to apply. Oldest logs expire by age or quota.
+
 - Buttons: new `click` action = `press` then `release`, now the default for the MCP `serial_button` tool, the CLI (`serial-deck button ENTER`), the web Device Control and the desktop app. Pika firmware acts on the release (v1 single click: a game launches on ENTER release), so a lone `press` no longer opens a game. `press`, `release` and `long_press` are unchanged single edges; the wire protocol is unchanged.
 
 ## 0.5.0 (2026-10-29)
@@ -185,7 +190,6 @@
 
 - Linux frozen bundles now include the Qt WebEngine backend and open the
   dashboard in a native window by default.
-
 
 - Devices that are not a physical UART: `unix:///path` (a local stream socket)
   next to `tcp://` and `udp://`. They have no baud, DTR/RTS, reset, bootloader
