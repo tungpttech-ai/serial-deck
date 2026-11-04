@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from serial_deck import updater as up
-from serial_deck.autoconnect import Settings, SettingsError, DEFAULTS
+from serial_deck.autoconnect import RuleWatcher, Settings, SettingsError, DEFAULTS
 from serial_deck.deckconfig import JsonFile
 
 REAL_INSTALL_KIND = up.install_kind
@@ -179,7 +180,8 @@ class UpdaterTest(unittest.TestCase):
         deck = WebBackend.__new__(WebBackend)
         deck.hub_manager = MagicMock()
         deck.hub_manager.shutdown.side_effect = RuntimeError("hub became busy")
-        deck.connections = SimpleNamespace(watcher=MagicMock(), settings=self.settings, start_rules=MagicMock())
+        deck.connections = SimpleNamespace(watcher=MagicMock(spec=RuleWatcher), settings=self.settings,
+                                           start_rules=MagicMock(), lock=threading.Lock())
         old = deck.connections.watcher
         self.settings.update(rules=[{"usb_vid_pid": "1a86:55d2", "baud": 2000000, "mode": "control"}])
         with self.assertRaises(RuntimeError):
@@ -188,7 +190,17 @@ class UpdaterTest(unittest.TestCase):
         self.assertIsNone(deck.connections.watcher)
         deck.connections.start_rules.assert_called_once_with()
 
-    def test_installer_result_is_loaded_after_restart(self):
+    def test_late_update_abort_cannot_restart_watcher_after_close(self):
+        from serial_deck.web import ConnectionManager
+        manager = ConnectionManager.__new__(ConnectionManager)
+        manager.lock, manager.watcher, manager.closing = threading.Lock(), None, False
+        manager._bridges, manager._order = {}, []
+        manager.close_all()
+        with patch("serial_deck.web.RuleWatcher") as build:
+            manager.start_rules()
+        build.assert_not_called()
+        self.assertIsNone(manager.watcher)
+
         result = self.root / "install-result.json"
         result.write_text(json.dumps({"state": "updated", "message": "installed"}), encoding="utf-8-sig")
         self.manager._set(state="restarting", helper_pid=4321, result=str(result))

@@ -492,7 +492,7 @@ class Session:
             end = self.cursor
             for record in record_rows(self.records, cursor=cursor, before=end):
                 if (cancelled is not None and cancelled()) or time.monotonic() >= deadline:
-                    end = record["seq"]  # resume here; the checks below return cancelled/timeout
+                    end = record["seq"]  # first record not examined
                     break
                 if record["kind"] == "frame":
                     continue
@@ -509,11 +509,11 @@ class Session:
                     raise AgentError("transport_unavailable", f"{self.port}: {self.lost}")
                 remaining = deadline - time.monotonic()
                 if cancelled is not None and cancelled():
-                    return {"matched": False, "reason": "cancelled", "next_cursor": self.next_seq}
+                    return {"matched": False, "reason": "cancelled", "next_cursor": end}
                 if remaining <= 0:
                     tail = list(reversed(list(record_rows(self.records, reverse=True, limit=max(1, context)))))
                     return {"matched": False, "reason": "timeout", "tail": redact_value(tail),
-                            "next_cursor": self.next_seq}
+                            "next_cursor": end}
                 if self.next_seq == end:
                     self.changed.wait(min(remaining, 0.5))
 

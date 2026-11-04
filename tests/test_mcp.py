@@ -541,6 +541,7 @@ class CancellationTest(unittest.TestCase):
             result = session.wait_for(["never"], 0, 1, False, 0, lambda: True)
         self.assertEqual(result["reason"], "cancelled")
         self.assertLess(len(scanned), 10)
+        self.assertEqual(result["next_cursor"], 1)  # resume where scanning stopped, not at the tail
 
     def test_unknown_dispatch_is_reported_as_unknown(self):
         from serial_deck.uart_client import FrameDispatchUnknown

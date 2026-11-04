@@ -310,6 +310,7 @@ class DeckWebBridge:
         self.telemetry: dict[str, Any] = {}
         self.history_logs = CachedRecords(f"Web {default_port or 'unconnected'}")
         self.raw_records = CachedRecords(f"Raw {default_port or 'unconnected'}")
+        self._archive_port = default_port  # device the archives above belong to
         self.sse_clients: set[queue.Queue[dict[str, Any]]] = set()
         self.sse_lock = threading.Lock()
         self.flashing = False
@@ -430,7 +431,6 @@ class DeckWebBridge:
             raise ValueError("Select a serial port, an SSH device or a tcp:// / udp:// / unix:// endpoint")
         if mode is not None and mode not in CONSOLE_MODES:
             raise ValueError(f"unknown console mode: {mode}")
-        previous_port = self.port  # the registry branch below already moves self.port
         if self.hub_registry is not None:
             if self.connected or self._owns_manager:
                 self._drop_connection()  # connect_lock is already held by the caller
@@ -467,9 +467,10 @@ class DeckWebBridge:
                 self._release_owned_manager()
             raise RuntimeError(f"Connection failed: {exc}") from exc
         with self.lock:
-            if port != previous_port:
+            if port != self._archive_port:
                 self.history_logs = CachedRecords(f"Web {port}")
                 self.raw_records = CachedRecords(f"Raw {port}")
+                self._archive_port = port
             self.port = port
             self.baud = baud
             if mode is not None:
@@ -1001,6 +1002,7 @@ class ConnectionManager:
         self.settings = Settings()
         self.pending: list[dict[str, Any]] = []  # saved ports not restored yet
         self.watcher: RuleWatcher | None = None
+        self.closing = False
         default_bridge.on_session_change = self.remember_session
 
     def get(self, conn_id: str) -> DeckWebBridge:
@@ -1131,20 +1133,30 @@ class ConnectionManager:
         return self.create()
 
     def start_rules(self) -> None:
-        if self.watcher is not None:
-            return
+        with self.lock:
+            if self.watcher is not None or self.closing:
+                return
+            self.watcher = True  # reserve the slot; built below outside the lock
 
         def connect(port: str, rule: dict[str, Any]) -> None:
             conn_id, bridge = self._free_bridge()
             bridge.connect(port, int(rule.get("baud") or self.baud), rule.get("mode") or "linux")
 
-        self.watcher = RuleWatcher(self.settings, self.default_bridge_ports, usb_identity,
-                                   self.is_port_open, connect)
-        self.watcher.start()
+        watcher = RuleWatcher(self.settings, self.default_bridge_ports, usb_identity,
+                              self.is_port_open, connect)
+        with self.lock:
+            if self.closing:
+                self.watcher = None
+                return
+            self.watcher = watcher
+        watcher.start()
 
     def close_all(self) -> None:
-        if self.watcher is not None:
-            self.watcher.close()
+        with self.lock:
+            self.closing = True
+            watcher, self.watcher = self.watcher, None
+        if isinstance(watcher, RuleWatcher):
+            watcher.close()
         with self.lock:
             bridges = list(self._bridges.values())
             self._bridges.clear()
@@ -6829,9 +6841,10 @@ class WebBackend:
         return None
 
     def prepare_update(self):
-        if self.connections.watcher is not None:
-            self.connections.watcher.close()
-            self.connections.watcher = None
+        with self.connections.lock:
+            watcher, self.connections.watcher = self.connections.watcher, None
+        if isinstance(watcher, RuleWatcher):
+            watcher.close()
         try:
             self.hub_manager.shutdown()
         except Exception:
@@ -6842,7 +6855,7 @@ class WebBackend:
         """Installer handoff failed: the app keeps running, so auto-connect must too."""
         try:
             if self.connections.settings.get()["rules"]:
-                self.connections.start_rules()
+                self.connections.start_rules()  # no-op once close_all() has run
         except Exception:
             pass  # settings trouble must not hide the update error
 
