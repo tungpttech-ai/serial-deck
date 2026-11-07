@@ -238,18 +238,16 @@ impl Manager {
         }
     }
 
-    /// Attach to a running multi-port daemon; never spawns one.
-    // ponytail: no hub autostart (Python spawns `serial_deck.hub` under routing.lock).
-    // Start the dashboard/hub first; add autostart when the Rust server ships without Python.
+    /// Attach to the running multi-port daemon, or start one like hub_client does:
+    /// discovery and spawn happen under `<runtime>/routing.lock`, so two clients
+    /// can never start two hubs on one UART.
     pub fn ensure_started(&mut self) -> HubResult<()> {
         if !self.socket_ready() {
-            match find_existing_hub() {
-                Some(path) => self.socket_path = path,
-                None => {
-                    return Err(HubError::Io(format!(
-                        "no serial-deck hub at {}; start the dashboard or `serial-deck-hub` first",
-                        self.socket_path
-                    )));
+            let _lock = RoutingLock::acquire()?;
+            if !self.socket_ready() {
+                match find_existing_hub() {
+                    Some(path) => self.socket_path = path,
+                    None => self.spawn_hub(3.0)?,
                 }
             }
         }
@@ -269,6 +267,100 @@ impl Manager {
 impl Drop for Manager {
     fn drop(&mut self) {
         self.unsubscribe_all();
+    }
+}
+
+impl Manager {
+    /// Detached `serial-deck-hub --baud B --socket S`, then wait for its control socket.
+    fn spawn_hub(&self, timeout: f64) -> HubResult<()> {
+        use std::os::unix::process::CommandExt;
+        let mut argv = hub_command().ok_or_else(|| HubError::Io(
+            "no serial-deck hub is running and `serial-deck-hub` was not found; start the dashboard, \
+             install serial-deck, or set SERIAL_DECK_HUB_CMD".into()))?;
+        let program = argv.remove(0);
+        let mut command = std::process::Command::new(&program);
+        command
+            .args(argv)
+            .args(["--baud", &self.baud().to_string(), "--socket", &self.socket_path])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // start_new_session=True: the daemon outlives this server and its client's Ctrl+C/SIGHUP.
+        unsafe {
+            command.pre_exec(|| if libc::setsid() < 0 { Err(io::Error::last_os_error()) } else { Ok(()) });
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| HubError::Io(format!("cannot start {program}: {e}")))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs_f64(timeout);
+        while std::time::Instant::now() < deadline {
+            if self.socket_ready() {
+                // The hub outlives us; a reaper thread keeps it from becoming a zombie meanwhile.
+                std::thread::spawn(move || child.wait());
+                return Ok(());
+            }
+            if let Ok(Some(_)) = child.try_wait() {
+                return Err(HubError::Io("UART hub exited during startup; run serial-deck-hub to diagnose".into()));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let pid = child.id();
+        std::thread::spawn(move || child.wait());
+        Err(HubError::Io(format!(
+            "UART hub did not create {}.ctl in {timeout} s; it may still be starting (pid {pid})", self.socket_path)))
+    }
+}
+
+/// How to run the hub: `SERIAL_DECK_HUB_CMD` (split on spaces), `serial-deck-hub` on PATH,
+/// or the default per-user install's venv.
+fn hub_command() -> Option<Vec<String>> {
+    if let Ok(cmd) = std::env::var("SERIAL_DECK_HUB_CMD") {
+        let argv: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
+        if !argv.is_empty() {
+            return Some(argv);
+        }
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let venv = util::home().join(".local/share/serial-deck/venv/bin");
+    std::env::split_paths(&path)
+        .chain(std::iter::once(venv))
+        .map(|d| d.join("serial-deck-hub"))
+        .find(|p| p.is_file())
+        .map(|p| vec![p.to_string_lossy().into_owned()])
+}
+
+/// `ipc.FileLock(runtime_dir()/"routing.lock")`: flock, released by the OS if we die.
+struct RoutingLock(std::fs::File);
+
+impl RoutingLock {
+    fn acquire() -> HubResult<Self> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = util::runtime_dir()?.join("routing.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(RoutingLock(file));
+            }
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
+                return Err(e.into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for RoutingLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 

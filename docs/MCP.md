@@ -24,8 +24,10 @@ about 10 MB per agent session instead of about 80 MB.
 cargo install --path mcp-rs --root ~/.local    # -> ~/.local/bin/serial-deck-mcp-rs
 ```
 
-It never starts the hub: keep the dashboard (or `serial-deck-hub`) running.
-On Windows, or without Rust, use the Python server:
+Like the Python server, it starts the shared hub when none is running
+(`serial-deck-hub` from PATH or `~/.local/share/serial-deck/venv`, or
+`SERIAL_DECK_HUB_CMD`), under the same `routing.lock` so concurrent clients
+never start two hubs. On Windows, or without Rust, use the Python server:
 
 ```bash
 python -m pip install "serial-deck[mcp]"     # mcp 2.2.x
