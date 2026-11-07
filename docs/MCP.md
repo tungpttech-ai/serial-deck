@@ -16,6 +16,19 @@ open on the same device while an agent works.
 
 ## Install
 
+The default server is the Rust binary in `mcp-rs/` (Linux and macOS). It is a
+drop-in for the Python server: same tools, policies, options and results, at
+about 10 MB per agent session instead of about 80 MB.
+
+```bash
+cargo install --path mcp-rs --root ~/.local    # -> ~/.local/bin/serial-deck-mcp-rs
+```
+
+Like the Python server, it starts the shared hub when none is running
+(`serial-deck-hub` from PATH or `~/.local/share/serial-deck/venv`, or
+`SERIAL_DECK_HUB_CMD`), under the same `routing.lock` so concurrent clients
+never start two hubs. On Windows, or without Rust, use the Python server:
+
 ```bash
 python -m pip install "serial-deck[mcp]"     # mcp 2.2.x
 ```
@@ -25,14 +38,16 @@ python -m pip install "serial-deck[mcp]"     # mcp 2.2.x
 Claude Code (user scope, every project):
 
 ```bash
-claude mcp add serial-deck -s user -- python -m serial_deck.mcp_server --allow interact
+claude mcp add serial-deck -s user -- ~/.local/bin/serial-deck-mcp-rs --allow interact
+# Python server instead:
+# claude mcp add serial-deck -s user -- python -m serial_deck.mcp_server --allow interact
 claude mcp get serial-deck        # Status: ✔ Connected
 ```
 
 Codex:
 
 ```bash
-codex mcp add serial-deck -- python -m serial_deck.mcp_server --allow interact
+codex mcp add serial-deck -- ~/.local/bin/serial-deck-mcp-rs --allow interact
 ```
 
 Claude Desktop and other clients (JSON):
@@ -48,7 +63,7 @@ Claude Desktop and other clients (JSON):
 }
 ```
 
-Use the interpreter that has `serial-deck` installed, for example
+For the Python server, use the interpreter that has `serial-deck` installed, for example
 `.venv/bin/python` or `.venv\Scripts\python.exe`. The dashboard's **MCP** page
 shows ready-to-copy commands with the right path for your machine. Tools load
 when the client starts a new session.
@@ -302,6 +317,7 @@ for control-protocol firmware. On Linux prefer `/dev/serial/by-id/...` paths.
 
 ```bash
 python -m unittest tests.test_mcp tests.test_flash_snapshot
+cd mcp-rs && cargo test
 ```
 
 They run a real hub against simulated firmware on a pseudo-terminal, with no

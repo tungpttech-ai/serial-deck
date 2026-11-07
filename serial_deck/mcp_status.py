@@ -88,8 +88,28 @@ def _probe_sdk(python: str) -> bool:
     return result.returncode == 0
 
 
+RUST_SERVER = "serial-deck-mcp-rs"
+
+def rust_server() -> str | None:
+    """The Rust MCP server (mcp-rs/, ~10 MB RSS vs ~80 MB) when installed; POSIX only."""
+    # ponytail: found on PATH, ~/.local/bin or ~/.cargo/bin only; bundles don't ship it yet.
+    if os.name == "nt":
+        return None
+    found = shutil.which(RUST_SERVER)
+    if found:
+        return found
+    for folder in (Path.home() / ".local" / "bin", Path.home() / ".cargo" / "bin"):
+        candidate = folder / RUST_SERVER
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
 def server_command(policy: str) -> list[str]:
-    """argv that starts the MCP server: this bundle's console executable, or `python -m`."""
+    """argv that starts the MCP server: the Rust binary when installed, else this
+    bundle's console executable, or `python -m`."""
+    rust = rust_server()
+    if rust:
+        return [rust, "--allow", policy]
     if runtime.frozen():
         return runtime.self_command("mcp", "--allow", policy)
     # `-m` works for a checkout and an installed wheel alike.
@@ -98,12 +118,13 @@ def server_command(policy: str) -> list[str]:
 
 def install_commands(policy: str = "interact") -> dict[str, str]:
     python = python_executable()
+    rust = rust_server() is not None
     command_argv = server_command(policy)
     config = {"mcpServers": {"serial-deck": {"command": command_argv[0], "args": command_argv[1:]}}}
     # Arguments after `--` go to `claude`/`codex`, not the shell, so no `&` there.
     command = " ".join(_quote(part) for part in command_argv)
     return {
-        "pip": "" if runtime.frozen() else _command([python, "-m", "pip", "install", "serial-deck[mcp]"]),
+        "pip": "" if runtime.frozen() or rust else _command([python, "-m", "pip", "install", "serial-deck[mcp]"]),
         "claude": f"claude mcp add serial-deck -s user -- {command}",
         "codex": f"codex mcp add serial-deck -- {command}",
         "json": json.dumps(config, indent=2),
@@ -205,7 +226,7 @@ def overview() -> dict[str, Any]:
     return {
         "server": " ".join(server_command("observe")[:-2]),
         "python": python,
-        "sdk_installed": sdk_installed(python),
+        "sdk_installed": rust_server() is not None or sdk_installed(python),
         "registrations": registrations(),
         "install": {policy: install_commands(policy) for policy in POLICIES},
         "tools": TOOLS,

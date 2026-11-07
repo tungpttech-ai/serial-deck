@@ -200,6 +200,7 @@ class FrozenIntegrationTest(unittest.TestCase):
 
     def test_mcp_commands_point_at_the_bundle(self):
         with patch("serial_deck.runtime.frozen", return_value=True), \
+                patch.object(mcp_status, "rust_server", return_value=None), \
                 patch("serial_deck.runtime.self_command", side_effect=lambda *a: ["/Apps/serial-deck-cli", *a]):
             commands = mcp_status.install_commands("interact")
         self.assertIn("/Apps/serial-deck-cli mcp --allow interact", commands["claude"])
