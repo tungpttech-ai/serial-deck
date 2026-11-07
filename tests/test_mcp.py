@@ -613,11 +613,19 @@ class ActivityTest(unittest.TestCase):
 
     def test_install_commands_run_the_package_module(self):
         from serial_deck import mcp_status
-        commands = mcp_status.install_commands("hardware")
+        with patch.object(mcp_status, "rust_server", return_value=None):
+            commands = mcp_status.install_commands("hardware")
         self.assertIn("-m serial_deck.mcp_server --allow hardware", commands["claude"])
         self.assertIn("claude mcp add serial-deck -s user", commands["claude"])
         self.assertIn("codex mcp add serial-deck", commands["codex"])
         self.assertEqual(json.loads(commands["json"])["mcpServers"]["serial-deck"]["args"][-1], "hardware")
+
+    def test_install_commands_prefer_the_rust_server(self):
+        from serial_deck import mcp_status
+        with patch.object(mcp_status, "rust_server", return_value="/opt/bin/serial-deck-mcp-rs"):
+            commands = mcp_status.install_commands("interact")
+        self.assertIn("-- /opt/bin/serial-deck-mcp-rs --allow interact", commands["claude"])
+        self.assertEqual(commands["pip"], "")
 
 class StdioTest(unittest.TestCase):
     def test_stdio_handshake_keeps_stdout_clean(self):
