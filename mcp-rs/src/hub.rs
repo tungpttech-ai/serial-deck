@@ -166,7 +166,7 @@ impl Manager {
                 self.unsubscribe_all();
                 *self.channel_socket.lock().unwrap() = channel.clone();
                 for (id, cb) in callbacks {
-                    let _ = self.subscribe_with_id(id, cb);
+                    self.subscribe_with_id(id, cb)?;
                 }
             }
         }

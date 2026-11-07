@@ -38,15 +38,35 @@ fn is_full(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::DiskFull)
 }
 
+/// `clean_settings`: any invalid field resets the whole section to defaults, as in Python.
+fn clean_settings(cache: &Value) -> Option<(String, i64, i64)> {
+    let cache = match cache {
+        Value::Null => return Some((String::new(), 64, 1024)),
+        Value::Object(m) => m,
+        _ => return None,
+    };
+    let dir = match cache.get("directory") {
+        None => String::new(),
+        Some(Value::String(d)) => d.clone(),
+        Some(_) => return None,
+    };
+    if dir.chars().count() > 4096 || dir.chars().any(|c| (c as u32) < 32 || c as u32 == 127) {
+        return None;
+    }
+    if !dir.is_empty() && !crate::util::expanduser(&dir).is_absolute() {
+        return None;
+    }
+    let int = |k: &str, d: i64, lo: i64, hi: i64| match cache.get(k) {
+        None => Some(d),
+        Some(v) => v.as_i64().filter(|x| !v.is_f64() && (lo..=hi).contains(x)),
+    };
+    Some((dir, int("ram_mib", 64, 1, 4096)?, int("disk_mib", 1024, 16, 1_048_576)?))
+}
+
 fn settings() -> (String, i64, i64) {
     let path = config_dir().join("settings.json");
     let raw: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
-    let cache = raw.get("log_cache").cloned().unwrap_or(Value::Null);
-    let int = |k: &str, d: i64, lo: i64, hi: i64| {
-        cache.get(k).and_then(Value::as_i64).filter(|v| (lo..=hi).contains(v)).unwrap_or(d)
-    };
-    let dir = cache.get("directory").and_then(Value::as_str).unwrap_or("").to_string();
-    (dir, int("ram_mib", 64, 1, 4096), int("disk_mib", 1024, 16, 1_048_576))
+    clean_settings(raw.get("log_cache").unwrap_or(&Value::Null)).unwrap_or((String::new(), 64, 1024))
 }
 
 impl LogCache {
@@ -392,6 +412,13 @@ impl Records {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bad_settings_fall_back_whole() {
+        assert_eq!(clean_settings(&json!({"ram_mib": 0, "disk_mib": 16})), None);
+        assert_eq!(clean_settings(&json!({"directory": "rel/x"})), None);
+        assert_eq!(clean_settings(&json!({"disk_mib": 32})), Some((String::new(), 64, 32)));
+    }
 
     #[test]
     fn append_and_page() {

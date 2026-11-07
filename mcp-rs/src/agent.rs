@@ -1295,11 +1295,15 @@ impl Agent {
             finalize: Mutex::new(()),
         });
         let (weak_job, weak_agent) = (Arc::downgrade(&job), self.me.clone());
-        let _ = manager.subscribe(Arc::new(move |event: &Value| {
+        let subscribed = manager.subscribe(Arc::new(move |event: &Value| {
             if let (Some(j), Some(a)) = (weak_job.upgrade(), weak_agent.upgrade()) {
                 a.on_flash_status(&j, event, true);
             }
         }));
+        if let Err(e) = subscribed {
+            job.snapshot.remove();
+            return err("transport_unavailable", format!("cannot watch the flash: {e}"), "nothing was flashed; call serial_flash_preview again");
+        }
         let guard = job.finalize.lock().unwrap();
         job.snapshot.set_state("sending", obj(json!({"hub_pid": status.get("pid"), "hub_socket": s.manager.socket_path,
             "channel_socket": s.manager.channel(), "flash_id_before": flash_id_before})));
@@ -1341,11 +1345,14 @@ impl Agent {
         if !flash.is_object() || !job.owns(flash) {
             return;
         }
-        // Looked up before the job lock: the agent lock is never taken under it.
-        let session_cursor = {
-            let st = self.state.lock().unwrap();
-            st.sessions.iter().find(|(k, _)| *k == job.session_port).map(|(_, s)| s.clone())
-        }.map(|s| s.cursor());
+        // Only for a finished flash, like Python, and before the job lock: the push
+        // thread never waits on agent/session locks per progress event.
+        let completion_cursor = if !truthy(get(flash, "active")) && !get(flash, "exit_code").is_null() {
+            let session = self.state.lock().unwrap().sessions.iter().find(|(k, _)| *k == job.session_port).map(|(_, x)| x.clone());
+            session.map(|x| x.cursor())
+        } else {
+            None
+        };
         let mut s = job.state.lock().unwrap();
         let revision = get(event, "revision").as_i64();
         if pushed {
@@ -1383,7 +1390,7 @@ impl Agent {
             }
             s.finished = Some(json!({"exit_code": get(flash, "exit_code"), "error": flash.get("error").cloned().unwrap_or(json!("")),
                                       "step": get(flash, "step"), "state": get(event, "state"), "port": get(event, "port")}));
-            s.completion_cursor = session_cursor;
+            s.completion_cursor = completion_cursor;
         }
     }
 
