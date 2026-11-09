@@ -167,7 +167,7 @@ def browser_mode_test(gui: str, env: dict[str, str], work: Path) -> None:
             stop_group(process)
 
 
-def mcp_tools(argv: list[str], env: dict[str, str]) -> list[dict]:
+def mcp_tools(argv: list[str], env: dict[str, str], version: str) -> list[dict]:
     """Talk to an MCP stdio server like a client does: wait for each reply."""
     import queue
     import threading
@@ -203,7 +203,9 @@ def mcp_tools(argv: list[str], env: dict[str, str]) -> list[dict]:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "smoke", "version": "1"}}})
-        reply(1)
+        initialized = reply(1)
+        if os.name != "nt":
+            assert initialized["result"]["serverInfo"]["version"] == version, initialized
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         return reply(2)["result"]["tools"]
@@ -264,6 +266,7 @@ def main() -> int:
     try:
         out = run(cli, env, "--version").stdout
         assert out.startswith("serial-deck "), out
+        version = out.strip().split()[-1]
         status = run(cli, env, "hub", "--status", check=False)
         assert status.returncode == 3, f"expected 'not running' (3), got {status.returncode}: {status.stderr}"
 
@@ -291,7 +294,7 @@ def main() -> int:
         hub_pid = info["pid"]
         print(f"hub pid {hub_pid} spawned by the bundle")
 
-        tools = mcp_tools([cli, "mcp", "--allow", "observe"], env)
+        tools = mcp_tools([cli, "mcp", "--allow", "observe"], env, version)
         names = sorted(t["name"] for t in tools)
         assert "serial_connect" in names and "serial_flash_preview" in names, names
         assert "serial_reset" not in names, names  # observe policy
@@ -306,7 +309,7 @@ def main() -> int:
         # AppImage file itself), never a Python interpreter.
         assert_mcp_executable(mcp_cmd, args.mcp_executable or cli)
         mcp_cmd = [*mcp_cmd[:-1], "observe"] if mcp_cmd[-2] == "--allow" else mcp_cmd
-        assert any(t["name"] == "serial_connect" for t in mcp_tools(mcp_cmd, env))
+        assert any(t["name"] == "serial_connect" for t in mcp_tools(mcp_cmd, env, version))
         print(f"registered MCP command works: {mcp_cmd[:2]}")
 
         if args.window or os.environ.get("DISPLAY") or os.name == "nt" or sys.platform == "darwin":

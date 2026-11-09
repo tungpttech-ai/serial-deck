@@ -46,6 +46,15 @@ def main(argv: list[str] | None = None) -> int:
         from serial_deck import runtime
         return runtime.host_exec(args[1:])
     command = args.pop(0) if args and args[0] in COMMANDS else "app"
+    if command == "mcp":
+        from serial_deck import mcp_status, runtime
+        rust = mcp_status.rust_server() if runtime.frozen() else None
+        if rust:
+            import json
+            import os
+            env = runtime.host_env()
+            env["SERIAL_DECK_HUB_ARGV"] = json.dumps(runtime.self_command("hub"))
+            os.execve(rust, [rust, *args], env)
     module_name = COMMANDS[command][0]
     import importlib
     module = importlib.import_module(f"serial_deck.{module_name}")

@@ -314,6 +314,11 @@ impl Manager {
 /// How to run the hub: `SERIAL_DECK_HUB_CMD` (split on spaces), `serial-deck-hub` on PATH,
 /// or the default per-user install's venv.
 fn hub_command() -> Option<Vec<String>> {
+    if let Ok(cmd) = std::env::var("SERIAL_DECK_HUB_ARGV") {
+        // JSON preserves spaces in installed bundle paths. Invalid overrides fail closed.
+        let argv: Vec<String> = serde_json::from_str(&cmd).ok()?;
+        return if argv.first().is_some_and(|s| !s.is_empty()) { Some(argv) } else { None };
+    }
     if let Ok(cmd) = std::env::var("SERIAL_DECK_HUB_CMD") {
         let argv: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
         if !argv.is_empty() {

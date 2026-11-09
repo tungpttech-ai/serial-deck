@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use util::{get, obj, py_str, redact};
 
-const SERVER_VERSION: &str = "1.0.0";
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const HANDSHAKE_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 static SPEC: LazyLock<Value> = LazyLock::new(|| serde_json::from_str(include_str!("tools.json")).unwrap());
 

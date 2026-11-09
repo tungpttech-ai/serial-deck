@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-11-09)
 
-- MCP: Rust server (`mcp-rs/`, `serial-deck-mcp-rs`) is the default on Linux/macOS. Same tools, policies, options, error payloads and shared files (log archive, flash snapshots, dashboard activity) as `serial_deck.mcp_server`, at ~10 MB RSS per agent session instead of ~80 MB. The dashboard's MCP page shows it when installed (`cargo install --path mcp-rs --root ~/.local`). Like the Python server it starts the hub when none runs (same `routing.lock`). The Python server stays for Windows and bundles.
+- MCP: Rust server (`mcp-rs/`, `serial-deck-mcp-rs`) is the default on Linux/macOS. Same tools, policies, options, error payloads and shared files (log archive, flash snapshots, dashboard activity) as `serial_deck.mcp_server`, at ~10 MB RSS per agent session instead of ~80 MB. The dashboard's MCP page shows it when installed (`cargo install --path mcp-rs --root ~/.local`). Like the Python server it starts the hub when none runs (same `routing.lock`). Linux/macOS installers include it and run it through the stable `serial-deck-cli mcp` command; standalone binaries are also release assets. Windows keeps the Python server. Existing agent registrations must be updated to use Rust.
 
 - Web/App appearance: palette button on the left rail picks Dark / Light / High contrast, overrides 11 colors with a color picker, and sets UI text size (12-24 px) and console/terminal font size (8-32 px). Saved per browser; Reset restores defaults.
 
