@@ -906,6 +906,49 @@ def served_page(token="tok"):
 class PageScriptSyntaxTest(unittest.TestCase):
     """The page is one big Python string: a stray `\\n` there breaks the whole dashboard."""
 
+    def test_event_history_and_dom_keep_only_recent_frames(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        script = page_script()
+        functions = "\n".join("function " + name + "(" + script.split("function " + name + "(", 1)[1]
+                              .split("\n    }\n", 1)[0] + "\n}"
+                              for name in ("handleStreamEvent", "renderEventEntry", "escapeHtml"))
+        setup = r"""
+const assert = require('node:assert/strict');
+const connId = 'active', autoScroll = false;
+const conns = {active: {eventsBuffer: []}, background: {eventsBuffer: []}};
+const ensureConn = id => conns[id];
+const pane = {children: [], appendChild(row) { this.children.push(row); },
+  get childElementCount() { return this.children.length; },
+  get firstElementChild() { return {remove: () => this.children.shift()}; }};
+const badge = {};
+const document = {createElement: () => ({}), getElementById: id => id === 'viewEvents' ? pane : badge};
+"""
+        cases = r"""
+for (let sequence = 0; sequence < 10000; sequence++) {
+  for (const id of ['active', 'background'])
+    handleStreamEvent(id, {type: 'frame', frame_type: 'FRAME_EVENT', sequence, message: {sequence}});
+}
+for (const conn of Object.values(conns)) {
+  assert.equal(conn.eventsBuffer.length, EVENT_MAX);
+  assert.equal(conn.eventsBuffer[0].sequence, 10000 - EVENT_MAX);
+  assert.equal(conn.eventsBuffer.at(-1).sequence, 9999);
+}
+assert.equal(pane.childElementCount, EVENT_MAX);
+assert.equal(badge.innerText, EVENT_MAX);
+assert.match(pane.children.at(-1).innerHTML, /seq=9999/);
+pane.children = [];
+conns.background.eventsBuffer.forEach(renderEventEntry);
+assert.equal(pane.childElementCount, EVENT_MAX);
+"""
+        constant = re.search(r"const EVENT_MAX = \d+;", script).group()
+        result = subprocess.run([node, "-"], input=setup + constant + functions + cases,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_the_inline_script_parses(self):
         import shutil
         import subprocess

@@ -3242,6 +3242,7 @@ HTML_PAGE = """<!DOCTYPE html>
       return mib * 1024 * 1024 / Math.max(1, Object.keys(conns).length);
     }
     const DOM_MAX = 3000;
+    const EVENT_MAX = 500;
     const IDF_RE = /^([EWIDV]) [(](\\d+)[)] ([^\\s:]+): ([\\s\\S]*)$/;
     let viewMode = (() => {
       try { return localStorage.getItem('serialdeck.viewMode') === 'raw' ? 'raw' : 'structured'; } catch (err) { return 'structured'; }
@@ -4278,6 +4279,11 @@ HTML_PAGE = """<!DOCTYPE html>
       if (activeTab === 'inspector' && currentPage === 'deck') renderMetrics();
     }, 1000);
 
+    // ponytail: collect detached DOM in Qt every 30 s; remove when Qt collects it promptly.
+    setInterval(() => {
+      if (window.pywebview && window.pywebview.platform === 'qtwebengine' && typeof window.gc === 'function') window.gc();
+    }, 30000);
+
     // ---- TX composer: collapsing keeps the draft and the history ----
     let txCollapsed = (() => { try { return localStorage.getItem('serialdeck.txCollapsed') === '1'; } catch (err) { return false; } })();
     function applyTxCollapsed() {
@@ -4683,6 +4689,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <pre class="text-brand-text text-[0.6875rem] overflow-x-auto">${escapeHtml(JSON.stringify(entry.message, null, 2))}</pre>
       `;
       container.appendChild(div);
+      while (container.childElementCount > EVENT_MAX) container.firstElementChild.remove();
       if (autoScroll) container.scrollTop = container.scrollHeight;
     }
 
@@ -5307,6 +5314,7 @@ HTML_PAGE = """<!DOCTYPE html>
         if (jsRunning) jsFeed(id, new TextDecoder().decode(bytes, { stream: true }));
       } else if (event.type === 'frame') {
         conn.eventsBuffer.push(event);
+        if (conn.eventsBuffer.length > EVENT_MAX) conn.eventsBuffer.splice(0, conn.eventsBuffer.length - EVENT_MAX);
         if (isActive) {
           document.getElementById('eventCountBadge').innerText = conn.eventsBuffer.length;
           renderEventEntry(event);
