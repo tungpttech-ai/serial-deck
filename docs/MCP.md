@@ -22,7 +22,7 @@ about 10 MB per agent session instead of about 80 MB.
 
 Linux/macOS v0.5.1 installers bundle Rust: register `serial-deck-cli mcp --allow interact` using the command shown on the dashboard's MCP page. Existing MCP registrations do not change automatically; replace Python registrations and restart the agent client.
 
-For a Python installation, download the `serial-deck-mcp-rs-0.5.1-<platform>.tar.gz` asset from the [release](https://github.com/tungpttech-ai/serial-deck/releases/tag/v0.5.1), verify it against `SHA256SUMS.txt`, extract it, and install the executable in `~/.local/bin`. Linux ARM64 (including Q6A) uses `linux-aarch64`. Or build from the v0.5.1 checkout:
+For a Python installation, download the `serial-deck-mcp-rs-0.5.2-<platform>.tar.gz` asset from the [release](https://github.com/tungpttech-ai/serial-deck/releases/tag/v0.5.2), verify it against `SHA256SUMS.txt`, extract it, and install the executable in `~/.local/bin`. Linux ARM64 (including Q6A) uses `linux-aarch64`. Or build from the v0.5.2 checkout:
 
 ```bash
 cargo install --locked --path mcp-rs --root ~/.local --force
