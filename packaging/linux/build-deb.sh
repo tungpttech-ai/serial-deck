@@ -32,7 +32,8 @@ install -m 0755 "$here/deb-prerm" "$root/DEBIAN/prerm"
 # Modes: dirs 0755, executables and shared objects 0755, data 0644.
 find "$root/opt" -type d -exec chmod 0755 {} +
 find "$root/opt" -type f -exec chmod 0644 {} +
-chmod 0755 "$root/$app/serial-deck" "$root/$app/serial-deck-cli"
+chmod 0755 "$root/$app/serial-deck" "$root/$app/serial-deck-cli" \
+    "$root/$app/_internal/serial-deck-mcp-rs"
 find "$root/opt" -type f \( -name '*.so' -o -name '*.so.*' \) -exec chmod 0755 {} +
 
 # Versioned shared-library dependencies from the ELF files themselves.

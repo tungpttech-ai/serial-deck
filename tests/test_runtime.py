@@ -1,6 +1,7 @@
 """Frozen-bundle behavior, simulated: self-relaunch, MCP commands, hub spawn, launcher."""
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -219,6 +220,32 @@ class FrozenIntegrationTest(unittest.TestCase):
 
 
 class LauncherTest(unittest.TestCase):
+    def test_frozen_mcp_execs_rust_with_stable_hub_argv(self):
+        with patch.object(runtime, "frozen", return_value=True), \
+                patch.object(mcp_status, "rust_server", return_value="/bundle/serial-deck-mcp-rs"), \
+                patch.object(runtime, "self_command", return_value=["/Apps/Serial Deck.AppImage", "--appimage-extract-and-run", "hub"]), \
+                patch.object(runtime, "host_env", return_value={"PATH": "/usr/bin"}), \
+                patch("os.execve", side_effect=SystemExit) as execute:
+            with self.assertRaises(SystemExit):
+                launcher.main(["mcp", "--allow", "hardware"])
+        binary, argv, env = execute.call_args.args
+        self.assertEqual(argv, [binary, "--allow", "hardware"])
+        self.assertEqual(json.loads(env["SERIAL_DECK_HUB_ARGV"]),
+                         ["/Apps/Serial Deck.AppImage", "--appimage-extract-and-run", "hub"])
+
+    @unittest.skipIf(os.name == "nt", "Rust MCP is POSIX-only")
+    def test_frozen_rust_discovery_uses_bundle_not_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / mcp_status.RUST_SERVER
+            binary.write_text("")
+            binary.chmod(0o755)
+            with patch.object(runtime, "frozen", return_value=True), \
+                    patch.object(sys, "_MEIPASS", temp, create=True), \
+                    patch("shutil.which", return_value="/other/server"):
+                self.assertEqual(mcp_status.rust_server(), str(binary))
+                self.assertEqual(mcp_status.server_command("observe")[-3:], ["mcp", "--allow", "observe"])
+
+
     def test_no_subcommand_opens_the_app(self):
         with patch("serial_deck.app.main", return_value=0) as app_main:
             self.assertEqual(launcher.main([]), 0)

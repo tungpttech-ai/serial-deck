@@ -17,6 +17,11 @@ ICONS = ROOT / "packaging" / "icons"
 IS_WIN, IS_MAC = sys.platform == "win32", sys.platform == "darwin"
 
 datas, binaries, hiddenimports = [], [], []
+if not IS_WIN:
+    rust = ROOT / "mcp-rs" / "target" / "release" / "serial-deck-mcp-rs"
+    if not rust.is_file():
+        raise RuntimeError("Build Rust MCP first: cargo build --release --locked --manifest-path mcp-rs/Cargo.toml")
+    binaries.append((str(rust), "."))
 for package in ("esptool", "espefuse", "espsecure", "webview", "mcp", "mcp_types",
                 "pydantic", "pydantic_core", "anyio", "serial"):
     try:

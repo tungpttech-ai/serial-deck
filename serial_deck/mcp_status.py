@@ -92,9 +92,11 @@ RUST_SERVER = "serial-deck-mcp-rs"
 
 def rust_server() -> str | None:
     """The Rust MCP server (mcp-rs/, ~10 MB RSS vs ~80 MB) when installed; POSIX only."""
-    # ponytail: found on PATH, ~/.local/bin or ~/.cargo/bin only; bundles don't ship it yet.
     if os.name == "nt":
         return None
+    if runtime.frozen():
+        candidate = Path(getattr(sys, "_MEIPASS", runtime.bundle_dir())) / RUST_SERVER
+        return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
     found = shutil.which(RUST_SERVER)
     if found:
         return found
@@ -107,11 +109,11 @@ def rust_server() -> str | None:
 def server_command(policy: str) -> list[str]:
     """argv that starts the MCP server: the Rust binary when installed, else this
     bundle's console executable, or `python -m`."""
+    if runtime.frozen():
+        return runtime.self_command("mcp", "--allow", policy)
     rust = rust_server()
     if rust:
         return [rust, "--allow", policy]
-    if runtime.frozen():
-        return runtime.self_command("mcp", "--allow", policy)
     # `-m` works for a checkout and an installed wheel alike.
     return [python_executable(), "-m", "serial_deck.mcp_server", "--allow", policy]
 

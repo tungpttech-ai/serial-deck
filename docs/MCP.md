@@ -20,9 +20,15 @@ The default server is the Rust binary in `mcp-rs/` (Linux and macOS). It is a
 drop-in for the Python server: same tools, policies, options and results, at
 about 10 MB per agent session instead of about 80 MB.
 
+Linux/macOS v0.5.1 installers bundle Rust: register `serial-deck-cli mcp --allow interact` using the command shown on the dashboard's MCP page. Existing MCP registrations do not change automatically; replace Python registrations and restart the agent client.
+
+For a Python installation, download the `serial-deck-mcp-rs-0.5.1-<platform>.tar.gz` asset from the [release](https://github.com/tungpttech-ai/serial-deck/releases/tag/v0.5.1), verify it against `SHA256SUMS.txt`, extract it, and install the executable in `~/.local/bin`. Linux ARM64 (including Q6A) uses `linux-aarch64`. Or build from the v0.5.1 checkout:
+
 ```bash
-cargo install --path mcp-rs --root ~/.local    # -> ~/.local/bin/serial-deck-mcp-rs
+cargo install --locked --path mcp-rs --root ~/.local --force
 ```
+
+Rust replaces only the MCP process. The shared hub and dashboard remain Python/WebView; this release does not establish the cause of multi-GB dashboard memory use.
 
 Like the Python server, it starts the shared hub when none is running
 (`serial-deck-hub` from PATH or `~/.local/share/serial-deck/venv`, or
@@ -56,8 +62,8 @@ Claude Desktop and other clients (JSON):
 {
   "mcpServers": {
     "serial-deck": {
-      "command": "/path/to/python",
-      "args": ["-m", "serial_deck.mcp_server", "--allow", "interact"]
+      "command": "/home/you/.local/bin/serial-deck-mcp-rs",
+      "args": ["--allow", "interact"]
     }
   }
 }

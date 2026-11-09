@@ -63,3 +63,14 @@ jobs:
           "$PY" -m serial_deck.hub --help > /dev/null
           "$PY" -m serial_deck.uart_client --help > /dev/null
           "$PY" -m serial_deck.flash --help > /dev/null
+
+  rust:
+    name: Rust MCP / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup update stable --no-self-update
+      - run: cargo +stable test --locked --manifest-path mcp-rs/Cargo.toml

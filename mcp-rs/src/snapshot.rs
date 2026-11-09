@@ -528,11 +528,14 @@ mod tests {
 
     #[test]
     fn command_paths() {
-        let d = std::env::temp_dir();
+        let d = std::env::temp_dir().join(format!("sd-paths-{}", util::random_hex(8)));
+        fs::create_dir(&d).unwrap();
+        fs::write(d.join("x.bin"), b"test").unwrap();
         let inside = d.join("x.bin").to_string_lossy().into_owned();
         let cmd = |p: &str| vec!["esptool".into(), "write-flash".into(), "0x0".into(), p.to_string()];
         assert!(command_paths_inside(&cmd(&inside), &d));
         assert!(!command_paths_inside(&cmd("/etc/passwd"), &d));
         assert!(!command_paths_inside(&["x".to_string()], &d));
+        fs::remove_dir_all(d).unwrap();
     }
 }

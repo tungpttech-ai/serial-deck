@@ -7,7 +7,7 @@ name: Release
 
 on:
   pull_request:
-    paths: ["packaging/**", "serial_deck/**", "pyproject.toml", ".github/workflows/release.yml"]
+    paths: ["mcp-rs/**", "packaging/**", "serial_deck/**", "pyproject.toml", ".github/workflows/release.yml"]
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -340,6 +340,11 @@ jobs:
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           echo "SERIAL_DECK_CODESIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
           echo "SERIAL_DECK_ENTITLEMENTS=$PWD/packaging/macos/entitlements.plist" >> "$GITHUB_ENV"
+      - name: Build Rust MCP
+        run: |
+          rustup update stable --no-self-update
+          cargo +stable test --locked --manifest-path mcp-rs/Cargo.toml
+          cargo +stable build --release --locked --manifest-path mcp-rs/Cargo.toml
       - name: Freeze
         run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
       - name: Sign app
@@ -439,6 +444,11 @@ jobs:
           sudo apt-get install -y -qq dpkg-dev fakeroot desktop-file-utils xvfb xauth libegl1 libgl1 libxkbcommon0 libnss3 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xkb1 libxkbcommon-x11-0 libpulse0 libbz2-1.0
           python -m pip install --require-hashes -r packaging/requirements/linux-x86_64.txt
           python -m pip install --no-deps --no-build-isolation .
+      - name: Build Rust MCP
+        run: |
+          rustup update stable --no-self-update
+          cargo +stable test --locked --manifest-path mcp-rs/Cargo.toml
+          cargo +stable build --release --locked --manifest-path mcp-rs/Cargo.toml
       - name: Freeze
         run: pyinstaller --noconfirm --clean packaging/serial-deck.spec
       - name: Smoke test the bundle (with a Tk window under Xvfb)
@@ -538,8 +548,37 @@ jobs:
             dist/*.deb
             dist/*.asc
 
+  rust-binaries:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-22.04, platform: linux-x86_64}
+          - {runner: ubuntu-24.04-arm, platform: linux-aarch64}
+          - {runner: macos-15, platform: macos-arm64}
+          - {runner: macos-15-intel, platform: macos-x86_64}
+    runs-on: ${{ matrix.runner }}
+    # Bullseye keeps standalone Linux binaries compatible with glibc >= 2.31.
+    container: ${{ startsWith(matrix.platform, 'linux-') && 'rust:bullseye' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - name: Test and build Rust MCP
+        run: |
+          rustup update stable --no-self-update
+          cargo +stable test --locked --manifest-path mcp-rs/Cargo.toml
+          cargo +stable build --release --locked --manifest-path mcp-rs/Cargo.toml
+          mkdir artifacts
+          tar -czf artifacts/serial-deck-mcp-rs-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}.tar.gz -C mcp-rs/target/release serial-deck-mcp-rs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.platform }}
+          path: artifacts/*
+
   publish:
-    needs: [prepare, python-dist, windows, macos, linux]
+    needs: [prepare, python-dist, windows, macos, linux, rust-binaries]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment: release
@@ -561,7 +600,8 @@ jobs:
           done
           ls -la artifacts
           for pattern in '*-Setup.exe' '*-win-x64.zip' '*-macos-arm64.dmg' '*-macos-x86_64.dmg' \
-                         '*.AppImage' '*_amd64.deb' '*.whl' '*.tar.gz'; do
+                         '*.AppImage' '*_amd64.deb' '*.whl' '*.tar.gz' \
+                         '*-linux-x86_64.tar.gz' '*-linux-aarch64.tar.gz' '*-macos-arm64.tar.gz' '*-macos-x86_64.tar.gz'; do
             compgen -G "artifacts/$pattern" >/dev/null || { echo "missing release file: $pattern" >&2; exit 1; }
           done
       - name: Checksums

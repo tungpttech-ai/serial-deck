@@ -294,7 +294,7 @@ pub fn realpath(p: &Path) -> PathBuf {
 pub fn pid_alive(pid: &Value) -> bool {
     match strict_int(pid) {
         Some(pid) if pid > 0 && pid <= i32::MAX as i64 => {
-            unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__errno_location() == libc::EPERM }
+            unsafe { libc::kill(pid as i32, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
         }
         _ => false,
     }
