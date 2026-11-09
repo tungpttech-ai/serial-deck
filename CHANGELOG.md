@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 (2026-11-09)
+
+- App: collect detached console DOM every 30 seconds in Qt windows to prevent renderer memory from accumulating during long serial sessions. Explicit Chromium flags retain precedence over the default GC setting.
+- Web/App: retain only the latest 500 protocol frames in the event buffer and rendered Events list.
+
 ## 0.5.1 (2026-11-09)
 
 - MCP: Rust server (`mcp-rs/`, `serial-deck-mcp-rs`) is the default on Linux/macOS. Same tools, policies, options, error payloads and shared files (log archive, flash snapshots, dashboard activity) as `serial_deck.mcp_server`, at ~10 MB RSS per agent session instead of ~80 MB. The dashboard's MCP page shows it when installed (`cargo install --path mcp-rs --root ~/.local`). Like the Python server it starts the hub when none runs (same `routing.lock`). Linux/macOS installers include it and run it through the stable `serial-deck-cli mcp` command; standalone binaries are also release assets. Windows keeps the Python server. Existing agent registrations must be updated to use Rust.
