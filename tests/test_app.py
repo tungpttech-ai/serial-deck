@@ -982,6 +982,18 @@ class RunAppTest(unittest.TestCase):
             self.assertEqual(app.run_app(self.args(), factory, self.fake_webview()), 2)
         self.assertIn("hub refused", "".join(c.args[0] for c in err.write.call_args_list))
 
+    def test_qt_gc_default_preserves_explicit_chromium_flags(self):
+        for flags in (None, "--disable-gpu"):
+            with self.subTest(flags=flags), patch.dict(os.environ), \
+                    patch.object(app, "wait_for_backend"), patch("builtins.print"):
+                os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
+                if flags is not None:
+                    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = flags
+                view = self.fake_webview()
+                view.start.side_effect = lambda **kw: self.assertEqual(
+                    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"], flags or "--js-flags=--expose-gc")
+                self.assertEqual(app.run_app(self.args(), FakeBackend, view), 0)
+
     def test_readiness_failure_closes_backend_without_window(self):
         backend = FakeBackend()
         webview = self.fake_webview()

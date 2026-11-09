@@ -485,6 +485,9 @@ def run_app(args: argparse.Namespace,
         # "Export logs" is a download (Content-Disposition: attachment); with
         # this setting pywebview asks for a destination with a save dialog.
         webview_module.settings["ALLOW_DOWNLOADS"] = True
+        # Qt can defer collection of removed console DOM nodes for gigabytes.
+        # Explicit Chromium flags still take precedence over this default.
+        os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--js-flags=--expose-gc")
         patch_qt_feature_permissions()
         # pywebview injects `body {user-select: none}` unless text_select is
         # on, which made logs, terminal output and the MCP commands
