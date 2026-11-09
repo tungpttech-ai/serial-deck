@@ -462,6 +462,9 @@ jobs:
           gh release download 1.9.1 -R AppImage/appimagetool \
             -p appimagetool-x86_64.AppImage -O "$RUNNER_TEMP/appimagetool"
           echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          gh api --allow-escape-sequences -H Accept:application/octet-stream \
+            repos/AppImage/type2-runtime/releases/assets/657374641 > "$RUNNER_TEMP/runtime-x86_64"
+          echo "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46  $RUNNER_TEMP/runtime-x86_64" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/appimagetool"
           appdir=$RUNNER_TEMP/SerialDeck.AppDir
           mkdir -p "$appdir/usr/lib"
@@ -470,7 +473,7 @@ jobs:
           install -m 0644 packaging/linux/serial-deck.desktop "$appdir/serial-deck.desktop"
           install -m 0644 packaging/icons/serial-deck-256.png "$appdir/serial-deck.png"
           desktop-file-validate "$appdir/serial-deck.desktop"
-          ARCH=x86_64 "$RUNNER_TEMP/appimagetool" --appimage-extract-and-run "$appdir" "dist/SerialDeck-$version-x86_64.AppImage"
+          ARCH=x86_64 "$RUNNER_TEMP/appimagetool" --appimage-extract-and-run --runtime-file "$RUNNER_TEMP/runtime-x86_64" "$appdir" "dist/SerialDeck-$version-x86_64.AppImage"
       - name: AppImage smoke tests (FUSE, and both no-FUSE forms)
         run: |
           set -euo pipefail
